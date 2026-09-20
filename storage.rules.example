@@ -1,0 +1,19 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // ClipForge source uploads + generated clips
+    // Path: users/{uid}/videos/{videoId}/source.mp4  and  users/{uid}/videos/{videoId}/clips/{clipId}.mp4
+    match /users/{uid}/videos/{videoId}/{allPaths=**} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid
+                   // 2GB limit, video mime only
+                   && request.resource.size < 2147483648
+                   && request.resource.contentType.matches('video/.*');
+    }
+
+    // (Fallback) allow per-user root
+    match /users/{uid}/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
