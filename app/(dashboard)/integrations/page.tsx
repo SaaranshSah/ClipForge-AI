@@ -22,7 +22,8 @@ export default function IntegrationsPage() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/integrations", { cache: "no-store" });
+      const res = await fetch("/api/integrations", { cache: "no-store", credentials: "include" });
+      if (!res.ok) throw new Error("Failed");
       const data = await res.json();
       setIntegrations(data.integrations || []);
     } catch {

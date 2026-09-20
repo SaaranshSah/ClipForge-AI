@@ -44,7 +44,7 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/settings", { cache: "no-store" });
+        const res = await fetch("/api/settings", { cache: "no-store", credentials: "include" });
         if (res.ok) {
           const data = await res.json();
           setName(data.profile?.name || user?.name || "");
@@ -69,6 +69,7 @@ export default function SettingsPage() {
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           profile: { name, bio, niche, language, timezone },
           nicheSettings: { niche, targetDuration, captionStyle, captionEnabled, language },

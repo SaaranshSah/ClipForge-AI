@@ -35,13 +35,25 @@ export interface ButtonProps
 }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild: _asChild, ...props }, ref) => {
+  ({ className, variant, size, asChild, children, ...props }, ref) => {
+    const classes = cn(buttonVariants({ variant, size, className }));
+
+    // Proper asChild: clone the single child and merge its props + className
+    // This fixes the "button > a" invalid nesting and makes links actually clickable.
+    if (asChild && React.isValidElement(children)) {
+      const child = children as React.ReactElement<any>;
+      return React.cloneElement(child, {
+        className: cn(classes, (child.props as any)?.className),
+        // @ts-ignore — allow refs for DOM elements
+        ref,
+        ...props,
+      } as any);
+    }
+
     return (
-      <button
-        className={cn(buttonVariants({ variant, size, className }))}
-        ref={ref}
-        {...props}
-      />
+      <button className={classes} ref={ref} {...props}>
+        {children}
+      </button>
     );
   }
 );

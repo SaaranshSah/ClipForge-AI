@@ -31,7 +31,8 @@ export default function ProjectsPage() {
       const params = new URLSearchParams();
       if (q) params.set("q", q);
       if (status !== "ALL") params.set("status", status);
-      const res = await fetch(`/api/videos?${params.toString()}`, { cache: "no-store" });
+      const res = await fetch(`/api/videos?${params.toString()}`, { cache: "no-store", credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch");
       const data = await res.json();
       setVideos(data.videos || []);
     } catch {

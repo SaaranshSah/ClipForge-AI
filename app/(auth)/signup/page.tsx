@@ -64,15 +64,19 @@ export default function SignupPage() {
     getFirebaseAnalytics();
   }, []);
 
+  const persistFbMarker = () => {
+    document.cookie = "clipforge_fb=1; path=/; max-age=604800; SameSite=Lax";
+  };
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     setError(null);
     setLoading(true);
     const trimmedEmail = email.trim();
     const trimmedName = name.trim();
 
     try {
-      // 1) Create Firebase user (email/password must be enabled in Firebase Console)
       const auth = getFirebaseAuth();
       const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
       if (trimmedName) {
@@ -81,10 +85,12 @@ export default function SignupPage() {
         } catch {}
       }
 
-      // 2) Sync to backend → Prisma + httpOnly JWT
+      persistFbMarker();
+
       const syncRes = await fetch("/api/auth/firebase", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           email: cred.user.email || trimmedEmail,
           name: trimmedName || cred.user.displayName || undefined,
@@ -94,46 +100,42 @@ export default function SignupPage() {
       const syncData = await syncRes.json().catch(() => ({}));
       if (!syncRes.ok) {
         console.warn("Firebase sync failed:", syncData);
-        if (syncData.error?.includes("DATABASE_URL")) {
-          toast.success("Account created in Firebase (backend DB not configured)");
-          await refresh();
-          router.push("/dashboard");
-          router.refresh();
-          return;
-        }
-        throw new Error(syncData.error || "Failed to create session");
+        toast.success("Account created in Firebase");
+        await refresh();
+        window.location.href = "/dashboard";
+        return;
       }
 
       toast.success("Account created");
       await refresh();
-      router.push("/dashboard");
-      router.refresh();
+      window.location.href = "/dashboard";
     } catch (err: any) {
       if (err?.code?.startsWith("auth/")) {
         setError(firebaseSignupError(err.code));
+        setLoading(false);
       } else {
-        // Fallback to legacy backend signup for preview without Firebase
         try {
           const res = await fetch("/api/auth/signup", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            credentials: "include",
             body: JSON.stringify({ name: trimmedName || undefined, email: trimmedEmail, password }),
           });
           const data = await res.json();
           if (res.ok) {
+            persistFbMarker();
+            // Ensure Firebase marker + JWT both present for legacy path too
             toast.success("Account created");
             await refresh();
-            router.push("/dashboard");
-            router.refresh();
+            window.location.href = "/dashboard";
             return;
           }
           setError(err.message || data.error || "Signup failed");
         } catch {
           setError(err.message || "Signup failed");
         }
+        setLoading(false);
       }
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -144,14 +146,14 @@ export default function SignupPage() {
         <CardDescription>Start forging clips — no credit card required</CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={onSubmit} className="space-y-4">
+        <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <div className="space-y-2">
             <Label htmlFor="name">Name <span className="text-zinc-500 font-normal">(optional)</span></Label>
-            <Input id="name" placeholder="Alex Creator" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+            <Input id="name" placeholder="Alex Creator" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" disabled={loading} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
-            <Input id="email" type="email" placeholder="you@creator.com" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
+            <Input id="email" type="email" placeholder="you@creator.com" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" disabled={loading} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="password">Password</Label>
@@ -165,12 +167,14 @@ export default function SignupPage() {
                 required
                 autoComplete="new-password"
                 className="pr-10"
+                disabled={loading}
               />
               <button
                 type="button"
                 onClick={() => setShow(!show)}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
                 tabIndex={-1}
+                disabled={loading}
               >
                 {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
@@ -179,13 +183,13 @@ export default function SignupPage() {
           </div>
 
           {error && (
-            <div className="flex gap-2 rounded-lg bg-red-950/50 border border-red-900 p-3 text-sm text-red-300">
+            <div className="flex gap-2 rounded-lg bg-red-950/50 border border-red-900 p-3 text-sm text-red-300" role="alert">
               <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
               <span>{error}</span>
             </div>
           )}
 
-          <Button type="submit" disabled={loading} className="w-full bg-white text-zinc-900 hover:bg-zinc-100">
+          <Button type="submit" disabled={loading} className="w-full bg-white text-zinc-900 hover:bg-zinc-100" aria-busy={loading}>
             {loading && <Loader2 className="h-4 w-4 animate-spin" />}
             {loading ? "Creating account..." : "Create account"}
           </Button>

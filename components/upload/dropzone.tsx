@@ -86,6 +86,7 @@ export function Dropzone({ onCompleted }: DropzoneProps) {
       const sigRes = await fetch("/api/uploads/signed-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           filename: file.name,
           fileSize: file.size,
@@ -127,7 +128,7 @@ export function Dropzone({ onCompleted }: DropzoneProps) {
         // Optionally actually POST the file to mock endpoint if small (<50MB) — skip for large
         if (file.size < 50 * 1024 * 1024) {
           try {
-            await fetch(uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+            await fetch(uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type }, credentials: "include" });
           } catch {}
         }
       } else {
@@ -159,6 +160,7 @@ export function Dropzone({ onCompleted }: DropzoneProps) {
       const completeRes = await fetch("/api/uploads/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ videoId: vid, storageKey }),
       });
       if (!completeRes.ok) {

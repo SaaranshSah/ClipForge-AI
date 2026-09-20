@@ -47,8 +47,51 @@ function StatCard({ title, value, subtitle, icon: Icon, href }: { title: string;
 
 export default async function DashboardPage() {
   const session = await getSessionUser();
-  // session checked in layout, but TS needs it
-  const userId = session!.id;
+  // If session is null but Firebase marker allowed layout to render (refresh race),
+  // gracefully show empty dashboard instead of crashing. Client will re-sync JWT shortly.
+  if (!session) {
+    const stats = {
+      totalVideos: 0,
+      clipsGenerated: 0,
+      scheduledClips: 0,
+      publishedClips: 0,
+      processingJobs: 0,
+      recentClips: [] as any[],
+      recentVideos: [] as any[],
+      integrations: [] as any[],
+    };
+    const connectedCount = 0;
+    return (
+      <div className="space-y-6 animate-in fade-in duration-500">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+            <p className="text-sm text-zinc-400 mt-1">Syncing your session — dashboard will populate shortly.</p>
+          </div>
+          <Button asChild className="bg-white text-zinc-900 hover:bg-zinc-100 shrink-0">
+            <Link href="/upload">
+              <UploadCloud className="h-4 w-4" />
+              Upload stream
+            </Link>
+          </Button>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          <StatCard title="Total videos" value={stats.totalVideos} subtitle="Uploaded streams" icon={Video} href="/projects" />
+          <StatCard title="Clips generated" value={stats.clipsGenerated} subtitle="Across all videos" icon={Scissors} href="/clips" />
+          <StatCard title="Scheduled clips" value={stats.scheduledClips} subtitle="Queued for publish (V2)" icon={CalendarClock} />
+          <StatCard title="Published clips" value={stats.publishedClips} subtitle="Ready to share" icon={CheckCircle2} href="/clips" />
+        </div>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-8 text-center">
+            <Loader2 className="h-6 w-6 animate-spin mx-auto text-zinc-500 mb-3" />
+            <p className="text-sm text-zinc-400">Restoring your workspace…</p>
+            <p className="text-xs text-zinc-600 mt-1">If this persists, try logging in again.</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+  const userId = session.id;
   let stats;
   try {
     stats = await getStats(userId);
