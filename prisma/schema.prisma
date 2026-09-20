@@ -1,0 +1,206 @@
+// ClipForge AI — Prisma Schema V1
+// Database: PostgreSQL
+// This schema covers all V1 entities with proper relations, indexes and enums.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+//
+// ─── ENUMS ───────────────────────────────────────────────────────────────────
+//
+
+enum VideoStatus {
+  PENDING
+  UPLOADING
+  UPLOADED
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum ClipStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum JobType {
+  TRANSCODE
+  THUMBNAIL
+  CLIP_EXTRACTION
+  CAPTION
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum IntegrationProvider {
+  YOUTUBE
+  INSTAGRAM
+  TIKTOK
+}
+
+enum IntegrationStatus {
+  DISCONNECTED
+  CONNECTED
+  EXPIRED
+  ERROR
+}
+
+//
+// ─── MODELS ──────────────────────────────────────────────────────────────────
+//
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String // bcrypt hash
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profile        Profile?
+  videos         Video[]
+  clips          Clip[]
+  processingJobs ProcessingJob[]
+  nicheSettings  NicheSettings?
+  integrations   Integration[]
+
+  @@index([email])
+  @@map("users")
+}
+
+model Profile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  avatarUrl String?
+  bio       String?
+  niche     String?
+  language  String   @default("en")
+  timezone  String   @default("UTC")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("profiles")
+}
+
+model Video {
+  id         String      @id @default(cuid())
+  userId     String
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  filename   String
+  storageUrl String?
+  storageKey String?
+  duration   Int? // seconds, nullable until probed
+  fileSize   Int // bytes
+  mimeType   String?
+  status     VideoStatus @default(PENDING)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  clips          Clip[]
+  processingJobs ProcessingJob[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([userId, status])
+  @@map("videos")
+}
+
+model Clip {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoId      String
+  video        Video      @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  startTime    Float // seconds
+  endTime      Float // seconds
+  duration     Float // seconds (derived: endTime - startTime)
+  title        String?
+  status       ClipStatus @default(PENDING)
+  outputUrl    String?
+  thumbnailUrl String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([userId])
+  @@index([videoId])
+  @@index([status])
+  @@index([userId, status])
+  @@index([createdAt])
+  @@map("clips")
+}
+
+model ProcessingJob {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoId   String
+  video     Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  type      JobType   @default(TRANSCODE)
+  status    JobStatus @default(QUEUED)
+  progress  Int       @default(0) // 0-100
+  error     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([videoId])
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+  @@map("processing_jobs")
+}
+
+model NicheSettings {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  niche          String   @default("general")
+  targetDuration Int      @default(30) // seconds: 15, 30, 45, 60
+  captionStyle   String   @default("minimal") // minimal | bold | karaoke | none
+  captionEnabled Boolean  @default(true)
+  language       String   @default("en")
+  tone           String   @default("neutral")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId])
+  @@map("niche_settings")
+}
+
+model Integration {
+  id                   String             @id @default(cuid())
+  userId               String
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider             IntegrationProvider
+  status               IntegrationStatus  @default(DISCONNECTED)
+  accessToken          String? // encrypted at rest in production
+  refreshToken         String?
+  externalAccountId    String?
+  externalAccountName  String?
+  connectedAt          DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@unique([userId, provider])
+  @@index([userId])
+  @@index([provider])
+  @@index([status])
+  @@map("integrations")
+}
