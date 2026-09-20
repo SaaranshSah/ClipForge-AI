@@ -7,14 +7,14 @@ import "server-only";
 
 type AdminApp = any;
 
-let adminApp: AdminApp | null = null;
-let adminDb: any = null;
-let adminStorage: any = null;
-let isMock = false;
+let adminApp: AdminApp | null = (globalThis as any).__clipforgeAdminApp ?? null;
+let adminDb: any = (globalThis as any).__clipforgeAdminDb ?? null;
+let adminStorage: any = (globalThis as any).__clipforgeAdminStorage ?? null;
+let isMock: boolean = (globalThis as any).__clipforgeIsMock ?? false;
 
 // In-memory mock for Firestore when admin not configured
-// Generic store: collectionPath -> Map<docId, data>
-const mockStore = new Map<string, Map<string, any>>();
+// Generic store: collectionPath -> Map<docId, data> — persisted on globalThis to survive HMR reloads
+const mockStore: Map<string, Map<string, any>> = (globalThis as any).__clipforgeMockStore ?? ((globalThis as any).__clipforgeMockStore = new Map<string, Map<string, any>>());
 
 function getCollectionMap(collectionPath: string): Map<string, any> {
   if (!mockStore.has(collectionPath)) mockStore.set(collectionPath, new Map());
@@ -142,19 +142,24 @@ export async function getAdminDb() {
         // If not available, fall back to mock but warn
         console.warn("[firebase-admin] FIREBASE_ADMIN_CREDENTIALS not set — using mock Firestore. Set it in Netlify for production.");
         isMock = true;
+        (globalThis as any).__clipforgeIsMock = true;
         return getMockDb();
       }
     }
     adminApp = admin.app();
+    (globalThis as any).__clipforgeAdminApp = adminApp;
     adminDb = admin.firestore();
+    (globalThis as any).__clipforgeAdminDb = adminDb;
     // Optional storage
     try {
       adminStorage = admin.storage();
+      (globalThis as any).__clipforgeAdminStorage = adminStorage;
     } catch {}
     return adminDb;
   } catch (e) {
     console.warn("[firebase-admin] init failed, falling back to mock:", (e as Error).message);
     isMock = true;
+    (globalThis as any).__clipforgeIsMock = true;
     return getMockDb();
   }
 }

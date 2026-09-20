@@ -284,13 +284,23 @@ export async function getClipForgeJobStatus(jobId: string): Promise<ClipForgeSta
     let progress = 10;
     if (age > 5000) { status = "processing"; progress = 60; }
     if (age > 15000) { status = shouldFail ? "failed" : "completed"; progress = 100; }
+    // When completed, return 5 diverse clips for V3 highlights scoring demo
+    const mockClips = status === "completed"
+      ? [
+          { clipId: `clip_${jobId}_01`, url: `https://storage.mock/clipforge/${jobId}/clip_01.mp4`, duration: 18, title: "Clutch 1v3 — high_energy_commentary" },
+          { clipId: `clip_${jobId}_02`, url: `https://storage.mock/clipforge/${jobId}/clip_02.mp4`, duration: 12, title: "Funny fail — reaction" },
+          { clipId: `clip_${jobId}_03`, url: `https://storage.mock/clipforge/${jobId}/clip_03.mp4`, duration: 22, title: "Win — comeback" },
+          { clipId: `clip_${jobId}_04`, url: `https://storage.mock/clipforge/${jobId}/clip_04.mp4`, duration: 15, title: "Impressive gameplay — surprising" },
+          { clipId: `clip_${jobId}_05`, url: `https://storage.mock/clipforge/${jobId}/clip_05.mp4`, duration: 20, title: "Story moment — high viewer interest" },
+        ]
+      : [];
     return {
       jobId,
       status,
       progress,
       error: status === "failed" ? "Mock processing failure for testing retry." : null,
       resultUrl: status === "completed" ? `https://storage.mock/clipforge/${jobId}/clip.mp4` : null,
-      clips: status === "completed" ? [{ clipId: `clip_${jobId}`, url: `https://storage.mock/clipforge/${jobId}/clip.mp4`, duration: 32, title: "Mock clip from fpq" }] : [],
+      clips: mockClips,
       updatedAt: new Date().toISOString(),
     };
   }

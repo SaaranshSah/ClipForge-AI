@@ -97,7 +97,24 @@ export async function POST(req: Request) {
 
     console.log(`[cloudinary/complete] saved ${docPath} -> ${publicId}`);
 
-    return NextResponse.json({ ok: true, video: doc });
+    // V3 Automatic Highlights: auto-queue ClipForge AI job for this video (idempotent, non-blocking)
+    // User does NOT need to manually start highlight detection
+    let highlightsJob: any = null;
+    try {
+      const { createHighlightsJob } = await import("@/lib/highlights/server");
+      const res = await createHighlightsJob({
+        uid,
+        videoId,
+        sourceUrl: secureUrl,
+        filename: fileName,
+        duration: duration !== null ? Number(duration) : null,
+      });
+      highlightsJob = res.job;
+    } catch (err: any) {
+      console.warn("[cloudinary/complete] highlights auto-queue failed (non-blocking)", err.message);
+    }
+
+    return NextResponse.json({ ok: true, video: doc, highlightsJob });
   } catch (e: any) {
     const status = e.status || 401;
     console.error("[cloudinary/complete] error", e.message);

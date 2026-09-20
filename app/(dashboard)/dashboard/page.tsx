@@ -10,6 +10,7 @@ import { formatBytes, timeAgo } from "@/lib/utils";
 import { DashboardClipForgeCard } from "@/components/clipforge/DashboardClipForgeCard";
 import { DashboardCloudinaryCard } from "@/components/cloudinary/DashboardCloudinaryCard";
 import { SyncingCard } from "@/components/dashboard/SyncingCard";
+import { HighlightsDashboardCard } from "@/components/highlights/HighlightsDashboardCard";
 
 export const dynamic = "force-dynamic";
 
@@ -136,6 +137,9 @@ export default async function DashboardPage() {
         <DashboardCloudinaryCard />
         <DashboardClipForgeCard />
       </div>
+
+      {/* V3 AI Highlights — automatic pipeline status */}
+      <HighlightsDashboardCard videoCount={stats.totalVideos} />
 
       <div className="grid lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Processing jobs */}

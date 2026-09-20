@@ -47,7 +47,56 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json({ video: updated, processingJob: job });
+    // V3 Automatic Highlights: enqueue ClipForge AI job for this video (fire-and-forget, idempotent)
+    // Do NOT block response; do short enqueue (<2s) and let worker / polling handle long processing
+    let highlightsJob: any = null;
+    try {
+      // For Firestore we also create a video doc for V3 discovery (so highlights can be listed via Firestore)
+      const { getAdminDb } = await import("@/lib/firebase-admin");
+      const { createHighlightsJob } = await import("@/lib/highlights/server");
+      const db = await getAdminDb();
+      // Mirror Prisma video into Firestore for unified V3 pipeline (so Cloudinary + Storage videos share same path)
+      // Firestore path users/{uid}/videos/{videoId}
+      try {
+        await db.doc(`users/${session.id}/videos/${videoId}`).set(
+          {
+            videoId,
+            fileName: updated.filename,
+            cloudinaryUrl: publicUrl,
+            cloudinaryPublicId: storageKey, // use storageKey as publicId for Firebase Storage videos
+            storageUrl: publicUrl,
+            storageKey,
+            resourceType: "video",
+            format: updated.mimeType?.split("/")[1] || "mp4",
+            fileSize: updated.fileSize,
+            duration: updated.duration,
+            width: null,
+            height: null,
+            status: "ready",
+            ownerId: session.id,
+            createdAt: updated.createdAt.toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+      } catch {}
+
+      // Auto-queue highlights (idempotent) — this will create ClipForge job fpq
+      const sourceUrl = publicUrl || `https://storage.mock/${storageKey}`;
+      const res = await createHighlightsJob({
+        uid: session.id,
+        videoId,
+        sourceUrl,
+        filename: updated.filename,
+        duration: updated.duration,
+      });
+      highlightsJob = res.job;
+    } catch (err: any) {
+      console.warn("[uploads/complete] highlights auto-queue failed (non-blocking)", err.message);
+      // Don't fail the upload — highlights can be queued later via /api/highlights/discover
+    }
+
+    return NextResponse.json({ video: updated, processingJob: job, highlightsJob });
   } catch (e) {
     console.error("upload complete error", e);
     return NextResponse.json({ error: "Failed to finalize upload" }, { status: 500 });

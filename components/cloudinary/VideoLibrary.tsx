@@ -9,6 +9,8 @@ import { getFirebaseAuth } from "@/lib/firebase";
 import { formatBytes, timeAgo, formatDuration } from "@/lib/utils";
 import { Trash2, Play, Eye, Loader2, Search, RefreshCw, Video, Clock, AlertCircle, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
+import { HighlightsPanel } from "@/components/highlights/HighlightsPanel";
+import { Sparkles } from "lucide-react";
 
 type VideoDoc = {
   videoId: string;
@@ -30,12 +32,58 @@ type VideoDoc = {
   error?: string;
 };
 
+type HlSummary = {
+  videoId: string;
+  count: number;
+  jobStatus?: string;
+  jobProgress?: number;
+};
+
 export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
   const [videos, setVideos] = useState<VideoDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [expandedHl, setExpandedHl] = useState<string | null>(null);
+  const [hlSummary, setHlSummary] = useState<Record<string, HlSummary>>({});
+
+  const fetchHighlightsSummary = useCallback(async () => {
+    try {
+      const auth = getFirebaseAuth();
+      const user = auth.currentUser;
+      const headers: Record<string, string> = {};
+      if (user) {
+        try { const token = await user.getIdToken(); headers["Authorization"] = `Bearer ${token}`; } catch {}
+      }
+      const [hlRes, jobRes] = await Promise.all([
+        fetch("/api/highlights", { credentials: "include", headers, cache: "no-store" }),
+        fetch("/api/highlights/jobs", { credentials: "include", headers, cache: "no-store" }),
+      ]);
+      const hlMap: Record<string, HlSummary> = {};
+      if (hlRes.ok) {
+        const hlData = await hlRes.json();
+        const byVideo: Record<string, number> = {};
+        (hlData.highlights || []).forEach((h: any) => {
+          const vid = h.videoId;
+          byVideo[vid] = (byVideo[vid] || 0) + 1;
+        });
+        Object.entries(byVideo).forEach(([vid, count]) => {
+          hlMap[vid] = { videoId: vid, count };
+        });
+      }
+      if (jobRes.ok) {
+        const jobData = await jobRes.json();
+        (jobData.jobs || []).forEach((j: any) => {
+          const vid = j.videoId;
+          if (!hlMap[vid]) hlMap[vid] = { videoId: vid, count: 0 };
+          hlMap[vid].jobStatus = j.status;
+          hlMap[vid].jobProgress = j.progress;
+        });
+      }
+      setHlSummary(hlMap);
+    } catch {}
+  }, []);
 
   const fetchVideos = useCallback(async () => {
     setLoading(true);
@@ -57,16 +105,24 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
       if (!res.ok) throw new Error("Failed");
       const data = await res.json();
       setVideos(data.videos || []);
+      // After videos, also refresh highlights summary
+      fetchHighlightsSummary();
     } catch {
       // keep
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchHighlightsSummary]);
 
   useEffect(() => {
     fetchVideos();
   }, [fetchVideos, refreshKey]);
+
+  useEffect(() => {
+    // Poll highlights summary every 8s for dashboard progress updates
+    const iv = setInterval(fetchHighlightsSummary, 8000);
+    return () => clearInterval(iv);
+  }, [fetchHighlightsSummary]);
 
   const handleDelete = async (videoId: string) => {
     if (!confirm(`Delete video ${videoId}? This removes Cloudinary asset and Firestore metadata.`)) return;
@@ -193,9 +249,47 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
                   {v.status === "ready" && (
                     <div className="flex items-center gap-1 text-xs text-emerald-400"><CheckCircle2 className="h-3 w-3" /> Cloudinary ready</div>
                   )}
+                  {/* V3 AI Highlights inline */}
+                  {(() => {
+                    const hl = hlSummary[v.videoId];
+                    if (!hl) {
+                      return (
+                        <div className="rounded-lg border border-dashed border-zinc-800 bg-zinc-950 p-2 flex items-center justify-between">
+                          <span className="text-xs text-zinc-500 flex items-center gap-1.5"><Sparkles className="h-3 w-3 text-zinc-600" /> No AI highlights yet</span>
+                          <Button size="sm" variant="outline" className="h-6 text-xs px-2" onClick={() => setExpandedHl(expandedHl === v.videoId ? null : v.videoId)}>
+                            {expandedHl === v.videoId ? "Close" : "AI"}
+                          </Button>
+                        </div>
+                      );
+                    }
+                    const status = hl.jobStatus || (hl.count > 0 ? "COMPLETED" : "QUEUED");
+                    const isActive = ["QUEUED", "PROCESSING", "RETRYING"].includes(status);
+                    const isFailed = status === "FAILED";
+                    const isDone = status === "COMPLETED";
+                    return (
+                      <div className={`rounded-lg border p-2 flex items-center justify-between ${isDone ? "border-emerald-900/50 bg-emerald-950/10" : isFailed ? "border-red-900/50 bg-red-950/10" : isActive ? "border-violet-900/50 bg-violet-950/10" : "border-zinc-800 bg-zinc-950"}`}>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Sparkles className={`h-3.5 w-3.5 shrink-0 ${isDone ? "text-emerald-400" : isActive ? "text-violet-400" : isFailed ? "text-red-400" : "text-zinc-600"}`} />
+                          <div className="min-w-0">
+                            <div className="text-xs font-medium flex items-center gap-1.5">
+                              {isDone ? `${hl.count} highlights` : isActive ? `${status.toLowerCase()} ${hl.jobProgress ?? 0}%` : isFailed ? "AI failed" : `${hl.count} highlights`}
+                              {isActive && <Loader2 className="h-3 w-3 animate-spin text-violet-400" />}
+                            </div>
+                            <div className="text-[11px] text-zinc-500 font-mono truncate">fpq • {status.toLowerCase()}</div>
+                          </div>
+                        </div>
+                        <Button size="sm" variant={isDone ? "secondary" : "outline"} className="h-6 text-xs px-2 shrink-0" onClick={() => setExpandedHl(expandedHl === v.videoId ? null : v.videoId)}>
+                          {expandedHl === v.videoId ? "Close" : isDone ? "View" : "Status"}
+                        </Button>
+                      </div>
+                    );
+                  })()}
                   <div className="flex gap-2 pt-1">
                     <Button variant="outline" size="sm" className="flex-1" onClick={() => setPreviewId(isPreview ? null : v.videoId)}>
                       {isPreview ? "Close" : "Preview"}
+                    </Button>
+                    <Button variant="outline" size="sm" className="flex-1" onClick={() => setExpandedHl(expandedHl === v.videoId ? null : v.videoId)}>
+                      <Sparkles className="h-3.5 w-3.5" /> {expandedHl === v.videoId ? "Hide AI" : "AI Highlights"}
                     </Button>
                     <Button
                       variant="destructive"
@@ -207,8 +301,14 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
                       {deleting === v.videoId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Delete
                     </Button>
                   </div>
+                  {expandedHl === v.videoId && (
+                    <div className="pt-2">
+                      <HighlightsPanel videoId={v.videoId} />
+                    </div>
+                  )}
                   <p className="text-[11px] font-mono text-zinc-600 truncate">{v.cloudinaryPublicId}</p>
                   <p className="text-[11px] text-zinc-600">Folder: <span className="font-mono">users/{v.ownerId}/videos/{v.videoId}/original/</span></p>
+                  <p className="text-[11px] text-zinc-600 font-mono">clips: <span className="font-mono">users/{v.ownerId}/videos/{v.videoId}/clips/*.mp4</span> • highlights: <span className="font-mono">…/highlights</span></p>
                 </CardContent>
               </Card>
             );

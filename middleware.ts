@@ -6,11 +6,15 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Allow public routes and static — login/signup and all /api/auth/* are public
+  // Also allow webhooks and worker tick (verified via HMAC / WORKER_SECRET, not JWT)
   if (
     pathname === "/" ||
     pathname.startsWith("/login") ||
     pathname.startsWith("/signup") ||
-    pathname.startsWith("/api/auth")
+    pathname.startsWith("/api/auth") ||
+    pathname.startsWith("/api/webhooks") ||
+    pathname.startsWith("/api/worker") ||
+    pathname.startsWith("/api/debug")
   ) {
     // If authenticated user tries to visit /login or /signup, send them to dashboard
     // Check JWT; also check Firebase marker cookie as fallback so we don't bounce

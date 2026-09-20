@@ -8,11 +8,13 @@ scale independently on Netlify Functions vs. a container worker.
 Run: uvicorn app.main:app --reload --port 8000
 """
 
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import os
+import asyncio
+import httpx
 
 app = FastAPI(
     title="ClipForge AI — Worker API",
@@ -82,3 +84,83 @@ def storage_webhook(payload: dict, authorized: bool = Depends(verify_api_key)):
     for event-driven architectures (S3 EventBridge / R2 Queues).
     """
     return {"ok": True, "received": payload}
+
+
+# V3 — Highlights background worker (ClipForge fpq)
+# Long-running AI work delegates to ClipForge SaaS; worker only polls status + scoring + clip generation
+# Netlify Functions stay short (<8s); heavy AI runs externally. Worker runs in separate container / process.
+
+class HighlightsTickResponse(BaseModel):
+    ok: bool
+    job: Optional[dict] = None
+    idle: Optional[bool] = None
+    message: Optional[str] = None
+
+NEXT_APP_URL = os.getenv("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+# In production, frontend is https://clipforge99.netlify.app — allow override via WORKER_FRONTEND_URL
+FRONTEND_URL = os.getenv("WORKER_FRONTEND_URL", NEXT_APP_URL)
+WORKER_SECRET = os.getenv("WORKER_SECRET", os.getenv("CLIPFORGE_API_KEY", ""))
+WORKER_ID = os.getenv("WORKER_ID", "python_worker_v3")
+
+async def _tick_highlights_frontend(worker_id: str = WORKER_ID, discover: bool = False):
+    """Call Next.js worker tick endpoint to process one highlights job."""
+    url = f"{FRONTEND_URL.rstrip('/')}/api/worker/highlights/tick"
+    if discover:
+        url += "?discover=1"
+    headers = {}
+    if WORKER_SECRET:
+        headers["x-worker-secret"] = WORKER_SECRET
+        headers["x-worker-id"] = worker_id
+    # Also send as Bearer for flexibility
+    # headers["Authorization"] = f"Bearer {WORKER_SECRET}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            resp = await client.post(url, json={"workerId": worker_id, "discover": discover}, headers=headers)
+            return resp.json()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+@app.get("/worker/highlights/status", tags=["worker"])
+async def highlights_worker_status(authorized: bool = Depends(verify_api_key)):
+    """Check pending highlights jobs via frontend tick endpoint (GET)."""
+    url = f"{FRONTEND_URL.rstrip('/')}/api/worker/highlights/tick"
+    headers = {}
+    if WORKER_SECRET:
+        headers["x-worker-secret"] = WORKER_SECRET
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.get(url, headers=headers)
+            return resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+@app.post("/worker/highlights/tick", tags=["worker"])
+async def highlights_worker_tick(background_tasks: BackgroundTasks, discover: bool = False, authorized: bool = Depends(verify_api_key)):
+    """
+    Worker tick — processes one QUEUED/RETRYING highlights job.
+    Called by cron every ~10s or manually.
+    Query ?discover=true to also auto-queue eligible videos (idempotent).
+    """
+    result = await _tick_highlights_frontend(discover=discover)
+    return result
+
+@app.post("/worker/highlights/run", tags=["worker"])
+async def highlights_worker_run(iterations: int = 5, delay: float = 2.0, discover: bool = False, authorized: bool = Depends(verify_api_key)):
+    """
+    Run N ticks sequentially — useful for local testing without cron.
+    Example: POST /worker/highlights/run?iterations=10&delay=1.5&discover=true
+    """
+    results = []
+    for i in range(max(1, min(iterations, 20))):
+        r = await _tick_highlights_frontend(discover=discover if i == 0 else False)
+        results.append(r)
+        if r.get("idle"):
+            break
+        if delay > 0 and i < iterations - 1:
+            await asyncio.sleep(delay)
+    return {"ok": True, "iterations": len(results), "results": results}
+
+@app.get("/worker/highlights/discover", tags=["worker"])
+async def highlights_discover(authorized: bool = Depends(verify_api_key)):
+    """Discover eligible videos and auto-queue (idempotent)."""
+    return await _tick_highlights_frontend(discover=True)
