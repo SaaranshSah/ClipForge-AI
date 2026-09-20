@@ -9,6 +9,35 @@ import { getFirebaseAuth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { Loader2, Sparkles, Play, RotateCcw, AlertCircle, CheckCircle2, Clock, Video, Eye, Trophy, Smile, Frown, MessageCircle, Zap, Star } from "lucide-react";
 import { formatDuration, timeAgo } from "@/lib/utils";
+
+function verifyCloudinaryVideoUrl(url: string, expectedCloud?: string): { ok: boolean; reason?: string; checks: Record<string, boolean> } {
+  const checks: Record<string, boolean> = {};
+  try {
+    const u = new URL(url);
+    checks["URL exists"] = !!url;
+    checks["HTTPS"] = u.protocol === "https:";
+    checks["Cloudinary domain"] = url.includes("res.cloudinary.com");
+    const cloudInUrl = url.match(/res\\.cloudinary\\.com\/([^/]+)\//)?.[1] || "";
+    if (expectedCloud) {
+      checks["Correct cloud name"] = cloudInUrl === expectedCloud;
+      checks["Not demo placeholder"] = cloudInUrl !== "demo" || expectedCloud === "demo";
+    } else {
+      checks["Correct cloud name"] = !!cloudInUrl;
+      checks["Not demo placeholder"] = cloudInUrl !== "demo";
+    }
+    checks["Resource type video"] = url.includes("/video/upload/");
+    checks["Not image/raw"] = !url.includes("/image/upload/") && !url.includes("/raw/upload/");
+    const ext = url.split("?")[0].split(".").pop()?.toLowerCase() || "";
+    checks["Browser compatible format"] = ["mp4","webm","mov","m4v"].includes(ext);
+    checks["Not HTML/JSON"] = !url.includes(".html") && !url.includes(".json");
+    checks["Actual uploaded asset"] = !url.includes("storage.mock") && !url.includes("storage.googleapis.com");
+    const ok = Object.values(checks).every(v => v);
+    const failed = Object.entries(checks).filter(([k,v]) => !v).map(([k]) => k).join(", ");
+    return { ok, reason: failed ? `Failed checks: ${failed}` : undefined, checks };
+  } catch (e:any) {
+    return { ok: false, reason: e.message, checks: { "Valid URL": false } };
+  }
+}
 import { toast } from "sonner";
 
 type Job = {
@@ -387,13 +416,30 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
                             onLoadStart={() => setVideoLoading(prev=>({...prev, [h.highlightId]: true}))}
                             onLoadedData={() => setVideoLoading(prev=>({...prev, [h.highlightId]: false}))}
                             onCanPlay={() => setVideoLoading(prev=>({...prev, [h.highlightId]: false}))}
-                            onError={(e)=> {
+                            onError={async (e)=> {
                               const el = e.currentTarget;
                               let msg = "Media error";
                               if (el.error) msg = `${el.error.message || 'Error'} (code ${el.error.code})`;
                               console.warn(`[HighlightsPanel] video error ${h.highlightId}`, msg, h.clipUrl);
+                              const cloudName = (typeof process !== "undefined" && (process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "")) || "";
+                              const verify = verifyCloudinaryVideoUrl(h.clipUrl || "", cloudName);
+                              let debug = "";
+                              if (el.error?.code === 4) {
+                                debug = ` — Format error code 4: ${verify.reason || 'unknown'}. Checks: ${JSON.stringify(verify.checks)}`;
+                                try {
+                                  const head = h.clipUrl ? await fetch(h.clipUrl, { method: "HEAD" }) : null;
+                                  if (head) {
+                                    const ct = head.headers.get("content-type") || "(none)";
+                                    debug += ` | HTTP ${head.status} Content-Type: ${ct} ${head.ok ? "(OK)" : "(FAIL)"} — ${ct.startsWith("video/") ? "is video" : "NOT video (maybe HTML/JSON 404 or wrong resource_type)"}`;
+                                    if (!head.ok) debug += " — URL 404, resource not in Cloudinary (cloudName maybe demo/placeholder) or not uploaded as video";
+                                    if (ct.includes("text/html") || ct.includes("application/json")) debug += " — Browser received HTML/JSON not video (check Cloudinary URL, cloudName, public_id, resource_type)";
+                                  }
+                                } catch (err:any) {
+                                  debug += ` | HEAD failed: ${err.message}`;
+                                }
+                              }
                               setVideoLoading(prev=>({...prev, [h.highlightId]: false}));
-                              setVideoErrors(prev=>({...prev, [h.highlightId]: msg}));
+                              setVideoErrors(prev=>({...prev, [h.highlightId]: msg + debug}));
                             }}
                           >
                             Your browser does not support the video tag.

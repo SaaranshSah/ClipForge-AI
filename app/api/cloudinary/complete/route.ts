@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getClipForgeUser } from "@/lib/clipforge/auth";
 import { getAdminDb } from "@/lib/firebase-admin";
+import { getCloudinary, getCloudinaryConfig, isCloudinaryMock } from "@/lib/cloudinary/server";
 import type { VideoDoc } from "@/lib/cloudinary/firestore";
 
 export const dynamic = "force-dynamic";
@@ -54,6 +55,83 @@ export async function POST(req: Request) {
     }
     if (!fileName) {
       fileName = `${videoId}.${format || "mp4"}`;
+    }
+
+    // === VERIFY CLOUDINARY RESOURCE (Requirement 3,4,6) ===
+    // Ensure URL is HTTPS and from correct cloud, and resource actually exists as video
+    const cfg = getCloudinaryConfig();
+    const expectedCloud = cfg.cloudName;
+    // Verify secureUrl is HTTPS and contains correct cloudName (not demo unless actually configured)
+    if (!secureUrl || !secureUrl.startsWith("https://")) {
+      return NextResponse.json({ error: "Cloudinary secure_url must be HTTPS", code: "INVALID_URL" }, { status: 400 });
+    }
+    if (expectedCloud && !secureUrl.includes(`res.cloudinary.com/${expectedCloud}/`)) {
+      // Allow if secureUrl is from a different cloud but warn — must match configured cloud
+      console.warn(`[cloudinary/complete] secureUrl cloud mismatch: expected ${expectedCloud}, got ${secureUrl}`);
+      // In production, enforce: if configured cloud is not demo, URL must contain it
+      if (expectedCloud !== "demo" && !secureUrl.includes(expectedCloud)) {
+        return NextResponse.json({ error: `Cloudinary URL cloud mismatch: expected ${expectedCloud}`, code: "CLOUD_MISMATCH" }, { status: 400 });
+      }
+    }
+    // Verify resource_type is video
+    if (resourceType && resourceType !== "video") {
+      console.warn(`[cloudinary/complete] resource_type is ${resourceType}, expected video`);
+      // Only allow video — reject image/raw unless explicitly intended
+      if (resourceType !== "video") {
+        return NextResponse.json({ error: `Cloudinary resource_type must be video, got ${resourceType}`, code: "INVALID_RESOURCE_TYPE" }, { status: 400 });
+      }
+    }
+    // Verify format is browser compatible (mp4/webm/mov)
+    const browserCompatible = ["mp4", "webm", "mov", "m4v"];
+    if (format && !browserCompatible.includes(format.toLowerCase())) {
+      console.warn(`[cloudinary/complete] format ${format} may not be browser compatible, will store but delivery may need transformation`);
+    }
+    // If not in mock mode, verify resource actually exists via Cloudinary API
+    if (!isCloudinaryMock() && !cfg.isMock && publicId && !publicId.includes("mock")) {
+      try {
+        const cld = getCloudinary();
+        // Verify via admin API — checks that resource exists and is video
+        const res: any = await cld.api.resource(publicId, { resource_type: "video" }).catch(async () => {
+          // Fallback: try without resource_type, or check via url
+          return await cld.api.resource(publicId, { resource_type: "video" });
+        });
+        if (!res || !res.public_id) {
+          return NextResponse.json({ error: "Cloudinary resource not found — upload may have failed", code: "RESOURCE_NOT_FOUND" }, { status: 400 });
+        }
+        if (res.resource_type && res.resource_type !== "video") {
+          return NextResponse.json({ error: `Cloudinary resource_type is ${res.resource_type}, expected video`, code: "WRONG_RESOURCE_TYPE" }, { status: 400 });
+        }
+        // Optionally verify HTTP 200 by HEAD request to secureUrl
+        try {
+          const head = await fetch(secureUrl, { method: "HEAD" });
+          if (!head.ok) {
+            console.warn(`[cloudinary/complete] secure_url HEAD returned ${head.status}`);
+          } else {
+            const ct = head.headers.get("content-type") || "";
+            if (!ct.startsWith("video/")) {
+              console.warn(`[cloudinary/complete] secure_url content-type is ${ct}, expected video/*`);
+            }
+          }
+        } catch (e) {
+          console.warn(`[cloudinary/complete] HEAD check failed`, e);
+        }
+        // Use verified data to enrich doc if needed
+        format = res.format || format;
+        resourceType = res.resource_type || resourceType;
+        width = res.width ?? width;
+        height = res.height ?? height;
+        duration = res.duration ?? duration;
+        fileSize = res.bytes ?? fileSize;
+      } catch (e: any) {
+        // If Cloudinary API fails, log but don't block saving in dev — in production, show real error
+        console.warn(`[cloudinary/complete] Cloudinary verification failed for ${publicId}:`, e.message);
+        // In production (not mock), return error instead of saving fake
+        if (process.env.TEST_MODE !== "true" && process.env.CLOUDINARY_MOCK !== "true") {
+          return NextResponse.json({ error: `Cloudinary verification failed: ${e.message} — check CLOUDINARY_* env and that resource was uploaded with resource_type video`, code: "VERIFICATION_FAILED" }, { status: 502 });
+        }
+      }
+    } else {
+      console.log(`[cloudinary/complete] skipping Cloudinary verification (mock mode publicId=${publicId})`);
     }
 
     // Security: verify publicId belongs to this uid's folder

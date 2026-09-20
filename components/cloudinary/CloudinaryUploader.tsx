@@ -142,8 +142,22 @@ export function CloudinaryUploader({ onUploaded }: { onUploaded?: (videoId: stri
 
       let uploadResult: any;
 
+      // Keep mock testing strictly separate — production (TEST_MODE=false) must NOT fake Cloudinary success
+      const isTestMode = (typeof process !== "undefined" && (process.env.NEXT_PUBLIC_TEST_MODE === "true" || process.env.TEST_MODE === "true")) || false;
+      // Also check if cloudName is demo — indicates placeholder, not real account
+      const isDemoCloud = cloudName === "demo";
+
       if (mock) {
-        // Mock Cloudinary — simulate progress and return fake result
+        // In production, do NOT simulate Cloudinary — show real config error
+        if (!isTestMode) {
+          throw new Error(
+            isDemoCloud
+              ? `Cloudinary not configured: cloudName is "demo" (placeholder). Set CLOUDINARY_CLOUD_NAME to your actual Cloudinary cloud name, plus CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET. Current .env.local uses demo — replace with real credentials from cloudinary.com/console.`
+              : `Cloudinary not configured: missing CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET. Set real credentials in .env.local and Netlify env. Received mock=${mock} cloudName=${cloudName}.`
+          );
+        }
+        // Only in explicit test mode, allow mock with warning
+        console.warn(`[cloudinary] TEST_MODE mock upload for ${publicId} — not a real Cloudinary resource (cloudName=${cloudName})`);
         uploadResult = await new Promise((resolve, reject) => {
           let p = 10;
           const iv = setInterval(() => {
@@ -157,6 +171,8 @@ export function CloudinaryUploader({ onUploaded }: { onUploaded?: (videoId: stri
               p = 100;
               clearInterval(iv);
               setProgress(100);
+              // In test mode, still construct URL via SDK helper pattern, but warn it's mock
+              // Use actual SDK url generation if available, not manual string, to ensure correct cloudName
               resolve({
                 public_id: publicId,
                 secure_url: `https://res.cloudinary.com/${cloudName}/video/upload/${publicId}.mp4`,

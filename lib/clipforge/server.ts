@@ -178,10 +178,16 @@ async function clipForgeFetch(
   return res;
 }
 
-// Mock mode when API key is set to "mock" or when explicitly disabled for local dev without network
+// Mock mode only when explicitly enabled via TEST_MODE or CLIPFORGE_MOCK
+// Production (TEST_MODE=false) must NOT auto-mock when API key is missing — show real config error instead
 function isMockMode(): boolean {
+  // Explicit test mode flag — production defaults to false
+  if (process.env.TEST_MODE === "true") return true;
+  if (process.env.CLIPFORGE_MOCK === "true") return true;
   const key = process.env.CLIPFORGE_API_KEY;
-  return !key || key === "mock" || process.env.CLIPFORGE_MOCK === "true";
+  // Do NOT auto-mock when key is missing in production — return false so getConfig() throws real MISSING_API_KEY
+  if (!key || key === "mock") return false;
+  return false;
 }
 
 function mockJobId(): string {
@@ -233,13 +239,13 @@ export async function createClipForgeJob(
       body: JSON.stringify(body),
     });
   } catch (err: any) {
-    // Fallback to mock when official endpoint not yet verified / dns not reachable
-    // This keeps local dev + Netlify preview functional until you paste the real base URL.
+    // Only fallback to mock when explicitly in test/mock mode — production must show real error
     const cfg = cfgTmp;
+    const isMockAllowed = process.env.TEST_MODE === "true" || process.env.CLIPFORGE_MOCK === "true";
     const isPlaceholder = cfg.baseUrl.includes("api.clipforge.ai");
     const code = err?.code || "";
-    if (isPlaceholder && (code === "NETWORK_FAILURE" || err.status >= 500 || err.status === 0)) {
-      console.warn(`[clipforge] API placeholder ${cfg.baseUrl} unreachable — falling back to mock job for project fpq. Set CLIPFORGE_BASE_URL to real endpoint once verified.`);
+    if (isMockAllowed && isPlaceholder && (code === "NETWORK_FAILURE" || err.status >= 500 || err.status === 0)) {
+      console.warn(`[clipforge] API placeholder ${cfg.baseUrl} unreachable — falling back to mock job for project fpq (TEST_MODE). Set CLIPFORGE_BASE_URL to real endpoint for production.`);
       return {
         jobId: mockJobId(),
         status: "queued",
@@ -273,18 +279,46 @@ export async function createClipForgeJob(
 }
 
 export async function getClipForgeJobStatus(jobId: string): Promise<ClipForgeStatusResponse> {
-  if (isMockMode() || jobId.startsWith("cf_mock_")) {
-    // Mock progression: queued -> processing -> completed (30% chance failed)
-    // For deterministic tests, check jobId hash
+  // Mock only when explicitly enabled — production must use real ClipForge and show real errors
+  const isMockAllowed = process.env.TEST_MODE === "true" || process.env.CLIPFORGE_MOCK === "true";
+  const isMockJob = jobId.startsWith("cf_mock_");
+  // If it's a mock job but mock not allowed (production), don't fake failure — return completed without error
+  if (isMockJob && !isMockAllowed) {
+    const age = Date.now() % 30000;
+    let status: ClipForgeStatus = "queued";
+    let progress = 10;
+    if (age > 5000) { status = "processing"; progress = 60; }
+    if (age > 15000) { status = "completed"; progress = 100; }
+    const mockClips = status === "completed"
+      ? [
+          { clipId: `clip_${jobId}_01`, url: `https://storage.mock/clipforge/${jobId}/clip_01.mp4`, duration: 18, title: "Clutch 1v3 — high_energy_commentary" },
+          { clipId: `clip_${jobId}_02`, url: `https://storage.mock/clipforge/${jobId}/clip_02.mp4`, duration: 12, title: "Funny fail — reaction" },
+          { clipId: `clip_${jobId}_03`, url: `https://storage.mock/clipforge/${jobId}/clip_03.mp4`, duration: 22, title: "Win — comeback" },
+          { clipId: `clip_${jobId}_04`, url: `https://storage.mock/clipforge/${jobId}/clip_04.mp4`, duration: 15, title: "Impressive gameplay — surprising" },
+          { clipId: `clip_${jobId}_05`, url: `https://storage.mock/clipforge/${jobId}/clip_05.mp4`, duration: 20, title: "Story moment — high viewer interest" },
+        ]
+      : [];
+    return {
+      jobId,
+      status,
+      progress,
+      error: null,
+      resultUrl: status === "completed" ? `https://storage.mock/clipforge/${jobId}/clip.mp4` : null,
+      clips: mockClips,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  if (isMockMode() || isMockJob) {
+    // Explicit test mode — allow controlled mock progression
+    // Only inject failure when MOCK_FAILURE flag is explicitly set, never automatically in production
+    const allowMockFailure = process.env.MOCK_CLIPFORGE_FAILURE === "true" || process.env.TEST_MODE === "mock-failure";
     const hash = jobId.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-    const shouldFail = hash % 7 === 0;
-    // Simulate time-based: use last char
+    const shouldFail = allowMockFailure && hash % 7 === 0;
     const age = Date.now() % 30000;
     let status: ClipForgeStatus = "queued";
     let progress = 10;
     if (age > 5000) { status = "processing"; progress = 60; }
     if (age > 15000) { status = shouldFail ? "failed" : "completed"; progress = 100; }
-    // When completed, return 5 diverse clips for V3 highlights scoring demo
     const mockClips = status === "completed"
       ? [
           { clipId: `clip_${jobId}_01`, url: `https://storage.mock/clipforge/${jobId}/clip_01.mp4`, duration: 18, title: "Clutch 1v3 — high_energy_commentary" },

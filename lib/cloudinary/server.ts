@@ -10,14 +10,42 @@ import crypto from "crypto";
  */
 
 export function getCloudinaryConfig() {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
-  const apiKey = process.env.CLOUDINARY_API_KEY;
-  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "";
+  const apiKey = process.env.CLOUDINARY_API_KEY || "";
+  const apiSecret = process.env.CLOUDINARY_API_SECRET || "";
 
-  // For local dev / preview without real Cloudinary, we allow mock mode
-  const isMock = !cloudName || !apiKey || !apiSecret || process.env.CLOUDINARY_MOCK === "true";
+  // Mock only when explicitly enabled — production (TEST_MODE=false) must use real Cloudinary
+  // Do NOT fallback to "demo" — use actual cloud name from env; if missing, isMock will be true and caller should show real config error
+  const explicitMock = process.env.CLOUDINARY_MOCK === "true" || process.env.TEST_MODE === "true";
+  const missingCreds = !cloudName || !apiKey || !apiSecret;
+  const isMock = explicitMock || missingCreds;
 
-  return { cloudName: cloudName || "demo", apiKey: apiKey || "mock_key", apiSecret: apiSecret || "mock_secret", isMock };
+  if (isMock) {
+    if (missingCreds) {
+      console.warn("[cloudinary] Cloudinary not configured — Set CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET for production. Current cloudName=" + (cloudName || "(empty)") + " TEST_MODE=" + process.env.TEST_MODE);
+      const isTest = process.env.TEST_MODE === "true" || process.env.CLOUDINARY_MOCK === "true";
+      if (!isTest) {
+        // Production: do NOT hardcode demo — return empty to force real config error
+        return { cloudName: "", apiKey: "", apiSecret: "", isMock: true };
+      }
+      // Test mode only: allow mock placeholder for local testing
+      return { 
+        cloudName: cloudName || "demo", 
+        apiKey: apiKey || "mock_key", 
+        apiSecret: apiSecret || "mock_secret", 
+        isMock: true 
+      };
+    }
+    // Explicit mock with creds present (e.g., CLOUDINARY_MOCK=true with demo)
+    return { 
+      cloudName, 
+      apiKey, 
+      apiSecret, 
+      isMock: true 
+    };
+  }
+
+  return { cloudName, apiKey, apiSecret, isMock };
 }
 
 export function isCloudinaryMock(): boolean {

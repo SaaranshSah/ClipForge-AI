@@ -8,6 +8,40 @@ import { Input } from "@/components/ui/input";
 import { getFirebaseAuth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { formatBytes, timeAgo, formatDuration } from "@/lib/utils";
+
+// Verify Cloudinary URL before preview — checks 10 points
+function verifyCloudinaryVideoUrl(url: string, expectedCloud?: string): { ok: boolean; reason?: string; checks: Record<string, boolean> } {
+  const checks: Record<string, boolean> = {};
+  try {
+    const u = new URL(url);
+    checks["URL exists"] = !!url;
+    checks["HTTPS"] = u.protocol === "https:";
+    checks["Cloudinary domain"] = url.includes("res.cloudinary.com");
+    const cloudInUrl = url.match(/res\.cloudinary\.com\/([^/]+)\//)?.[1] || "";
+    if (expectedCloud) {
+      checks["Correct cloud name"] = cloudInUrl === expectedCloud;
+      if (expectedCloud === "demo" && cloudInUrl === "demo") {
+        checks["Not demo placeholder"] = false; // warn if demo is used in production
+      } else {
+        checks["Not demo placeholder"] = cloudInUrl !== "demo" || expectedCloud === "demo";
+      }
+    } else {
+      checks["Correct cloud name"] = !!cloudInUrl;
+      checks["Not demo placeholder"] = cloudInUrl !== "demo";
+    }
+    checks["Resource type video"] = url.includes("/video/upload/");
+    checks["Not image/raw"] = !url.includes("/image/upload/") && !url.includes("/raw/upload/");
+    const ext = url.split("?")[0].split(".").pop()?.toLowerCase() || "";
+    checks["Browser compatible format"] = ["mp4","webm","mov","m4v"].includes(ext);
+    checks["Not HTML/JSON"] = !url.includes(".html") && !url.includes(".json");
+    checks["Actual uploaded asset"] = !url.includes("storage.mock") && !url.includes("storage.googleapis.com");
+    const ok = Object.values(checks).every(v => v);
+    const failed = Object.entries(checks).filter(([k,v]) => !v).map(([k]) => k).join(", ");
+    return { ok, reason: failed ? `Failed checks: ${failed}` : undefined, checks };
+  } catch (e:any) {
+    return { ok: false, reason: e.message, checks: { "Valid URL": false } };
+  }
+}
 import { Trash2, Play, Eye, Loader2, Search, RefreshCw, Video, Clock, AlertCircle, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { HighlightsPanel } from "@/components/highlights/HighlightsPanel";
@@ -282,14 +316,30 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
                         onLoadStart={() => setVideoLoading(prev=>({...prev, [v.videoId]: true}))}
                         onLoadedData={() => setVideoLoading(prev=>({...prev, [v.videoId]: false}))}
                         onCanPlay={() => setVideoLoading(prev=>({...prev, [v.videoId]: false}))}
-                        onError={(e)=> {
+                        onError={async (e)=> {
                           const el = e.currentTarget;
                           const errCode = el.error?.code;
                           let msg = "Unknown error";
                           if (el.error) msg = `${el.error.message || 'MediaError'} (code ${errCode})`;
                           console.warn(`[VideoLibrary] video error ${v.videoId}`, msg, v.cloudinaryUrl);
+                          // Debug format error code 4 — investigate 10 checks
+                          const cloudName = (typeof process !== "undefined" && (process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "")) || "";
+                          const verify = verifyCloudinaryVideoUrl(v.cloudinaryUrl, cloudName);
+                          let debug = "";
+                          if (errCode === 4) {
+                            debug = ` — Format error: ${verify.reason || 'unknown'}. Checks: ${JSON.stringify(verify.checks)}`;
+                            // Try HEAD to see Content-Type
+                            try {
+                              const head = await fetch(v.cloudinaryUrl, { method: "HEAD" });
+                              const ct = head.headers.get("content-type") || "(none)";
+                              debug += ` | HTTP ${head.status} Content-Type: ${ct} ${head.ok ? "(OK)" : "(FAIL)"} — ${ct.startsWith("video/") ? "is video" : "NOT video - URL may be 404 HTML/JSON"}`;
+                              if (!head.ok) debug += " — URL does not return 200, resource may not exist in Cloudinary or cloudName is demo/placeholder";
+                            } catch (err:any) {
+                              debug += ` | HEAD failed: ${err.message}`;
+                            }
+                          }
                           setVideoLoading(prev=>({...prev, [v.videoId]: false}));
-                          setVideoErrors(prev=>({...prev, [v.videoId]: msg}));
+                          setVideoErrors(prev=>({...prev, [v.videoId]: msg + debug}));
                         }}
                         onVolumeChange={() => {}}
                       />

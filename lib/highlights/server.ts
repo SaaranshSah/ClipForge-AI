@@ -45,12 +45,14 @@ async function db() {
 async function getCloudinaryPublicId(uid: string, videoId: string, clipId: string): Promise<{ publicId: string; secureUrl: string; resourceType: string; format: string }> {
   const cfg = getCloudinaryConfig();
   const publicId = `users/${uid}/videos/${videoId}/clips/${clipId}`;
-  const cloudName = cfg.cloudName || "demo";
+  const cloudName = cfg.cloudName ;
+  const isTestModeHelper = process.env.TEST_MODE === "true" || process.env.CLOUDINARY_MOCK === "true";
   if (cfg.isMock || isCloudinaryMock()) {
+    if (!isTestModeHelper) throw new Error(`Cloudinary not configured (cloudName=${cloudName || "(empty)"}) — cannot generate mock clip URL for ${clipId}. Set real Cloudinary credentials.`);
     const hash = clipId.split('').reduce((a,c)=>a+c.charCodeAt(0),0);
     const so = hash % 15;
     const eo = so + 5 + (hash % 10);
-    const secureUrl = `https://res.cloudinary.com/${cloudName}/video/upload/so_${so},eo_${eo}/dog.mp4`;
+    const secureUrl = `https://res.cloudinary.com/${cloudName}/video/upload/so_${so},eo_${eo},f_mp4,vc_h264/fallback.mp4`;
     return { publicId, secureUrl, resourceType: "video", format: "mp4" };
   }
   const secureUrl = getCloudinaryVideoUrl(publicId, cloudName, "mp4");
@@ -497,7 +499,7 @@ export async function generateHighlightsForJob(uid: string, videoId: string, job
     await _db.doc(highlightDocPath(uid, videoId, highlightId)).set(highlight, { merge: false });
 
     // Generate clip in Cloudinary — ALL video files in Cloudinary, resource_type video
-    // For V3, clips are stored in Cloudinary at users/{uid}/videos/{videoId}/clips/{clipId} with resource_type video
+    // Must verify real Cloudinary upload, not fake demo URL
     try {
       const cfg = getCloudinaryConfig();
       const publicId = `users/${uid}/videos/${videoId}/clips/${clipId}`;
@@ -508,45 +510,94 @@ export async function generateHighlightsForJob(uid: string, videoId: string, job
       let width: number | null = 1920;
       let height: number | null = 1080;
       
-      if (isCloudinaryMock() || cfg.isMock) {
-        // Mock mode: generate playable Cloudinary URL using demo video transformation
-        // This ensures clip preview actually plays (dog.mp4 is a real Cloudinary demo video)
+      const isMock = isCloudinaryMock() || cfg.isMock;
+      const isTestMode = process.env.TEST_MODE === "true" || process.env.CLOUDINARY_MOCK === "true";
+      
+      if (isMock) {
+        if (!isTestMode) {
+          // Production: do NOT fake clip — show real Cloudinary config error
+          throw new Error(`Cloudinary not configured: CLOUDINARY_CLOUD_NAME=${cfg.cloudName || "(empty)"} isMock=${isMock}. Set real CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET. Clip ${clipId} not uploaded — cannot generate fake URL.`);
+        }
+        // Test mode only: generate clip URL via transformation of ORIGINAL video (not dog.mp4) using real publicId
+        // This still requires original to exist, but uses correct cloudName and user's video, not demo placeholder
+        const sourcePublicId = (videoData as any)?.cloudinaryPublicId || `users/${uid}/videos/${videoId}/original/${videoId}`;
         const hash = clipId.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0);
         const so = hash % 20;
         const eo = so + Math.max(5, Math.round(highlight.duration));
-        secureUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_${so},eo_${eo}/dog.mp4`;
+        // Use SDK-like generation with correct cloudName and source publicId, not hardcoded demo/dog
+        // Generate browser-compatible delivery (mp4/h264) with Cloudinary transformation
+        // In test mode, we simulate by using transformation on source; in real, we'd upload new asset
+        secureUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/so_${so},eo_${eo},f_mp4,vc_h264/${sourcePublicId}.mp4`;
+        // Verify URL is HTTPS and correct cloudName
+        if (!secureUrl.startsWith("https://")) throw new Error("Generated clip URL must be HTTPS");
         highlight.clipStoragePath = publicId + ".mp4";
         highlight.clipUrl = secureUrl;
         bytes = Math.round(highlight.duration * 800000);
         width = videoData?.width || 1920;
         height = videoData?.height || 1080;
         format = videoData?.format || "mp4";
+        // In test mode, also verify resource_type would be video
+        resourceType = "video";
+        console.warn(`[highlights] TEST_MODE mock clip for ${clipId} using source transform ${sourcePublicId} so_${so},eo_${eo} — not a real uploaded clip`);
       } else {
         const cld = getCloudinary();
         const sourceUrl = cfStatus.resultUrl || cfStatus.clips?.find((c: any) => c.clipId === clipId)?.url || cfStatus.clips?.[0]?.url;
         if (sourceUrl && !sourceUrl.includes("storage.mock")) {
           try {
+            // Ensure resource_type video and browser-compatible format
             const uploadResult: any = await cld.uploader.upload(sourceUrl, {
-              resource_type: "video",
+              resource_type: "video" as any,
               public_id: publicId,
               overwrite: false,
               folder: `users/${uid}/videos/${videoId}/clips`,
             });
             secureUrl = uploadResult.secure_url;
+            // Verify response is actually video
+            if (uploadResult.resource_type !== "video") {
+              throw new Error(`Cloudinary returned resource_type ${uploadResult.resource_type}, expected video`);
+            }
             resourceType = uploadResult.resource_type || "video";
             format = uploadResult.format || "mp4";
+            // Ensure browser-compatible — if format not mp4/webm, request delivery as mp4
+            if (!["mp4", "webm", "mov"].includes(format.toLowerCase())) {
+              // Use delivery transformation to mp4, but keep original public_id
+              secureUrl = secureUrl.replace(new RegExp(`\.${format}$`), ".mp4");
+              if (!secureUrl.includes("f_mp4")) {
+                // Alternative: use SDK to generate delivery url with format mp4
+                secureUrl = getCloudinaryVideoUrl(publicId, cfg.cloudName, "mp4");
+              }
+            }
             bytes = uploadResult.bytes || 0;
             width = uploadResult.width || null;
             height = uploadResult.height || null;
             highlight.clipStoragePath = uploadResult.public_id + (uploadResult.public_id.endsWith(".mp4") ? "" : ".mp4");
             highlight.clipUrl = secureUrl;
+            // Verify URL is HTTPS and correct cloudName
+            if (!secureUrl.includes(`res.cloudinary.com/${cfg.cloudName}/`)) {
+              console.warn(`[highlights] Cloudinary URL cloud mismatch: ${secureUrl} vs ${cfg.cloudName}`);
+            }
+            // Verify HTTP 200 and content-type via HEAD (non-blocking)
+            try {
+              const head = await fetch(secureUrl, { method: "HEAD" });
+              if (!head.ok) console.warn(`[highlights] clip secure_url HEAD ${head.status} for ${clipId}`);
+              else {
+                const ct = head.headers.get("content-type") || "";
+                if (!ct.startsWith("video/")) console.warn(`[highlights] clip content-type ${ct} not video for ${clipId}`);
+              }
+            } catch {}
           } catch (uploadErr: any) {
-            console.warn(`[highlights] Cloudinary upload failed for ${clipId}, falling back to URL`, uploadErr.message);
+            console.warn(`[highlights] Cloudinary upload failed for ${clipId}`, uploadErr.message);
+            // In production, don't fallback to fake URL — propagate error
+            if (!isTestMode) throw uploadErr;
             secureUrl = getCloudinaryVideoUrl(publicId, cfg.cloudName, "mp4");
             highlight.clipStoragePath = publicId + ".mp4";
             highlight.clipUrl = secureUrl;
           }
         } else {
+          // No sourceUrl — in production, error; in test, generate via SDK
+          if (!isTestMode) {
+            throw new Error(`No ClipForge resultUrl for ${clipId} — cannot upload clip to Cloudinary. SourceUrl missing.`);
+          }
           secureUrl = getCloudinaryVideoUrl(publicId, cfg.cloudName, "mp4");
           highlight.clipStoragePath = publicId + ".mp4";
           highlight.clipUrl = secureUrl;
@@ -593,7 +644,9 @@ export async function generateHighlightsForJob(uid: string, videoId: string, job
       console.warn(`[highlights] Cloudinary save failed for ${highlightId}`, e.message);
       const cfg = getCloudinaryConfig();
       const publicId = `users/${uid}/videos/${videoId}/clips/${clipId}`;
-      const fallbackUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/dog.mp4`;
+      const isTestModeF = process.env.TEST_MODE === "true" || process.env.CLOUDINARY_MOCK === "true";
+      if (!isTestModeF) throw e;
+      const fallbackUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/fallback.mp4`;
       highlight.clipUrl = (highlight as any).clipUrl || fallbackUrl;
       highlight.clipStoragePath = publicId;
       await _db.doc(highlightDocPath(uid, videoId, highlightId)).set({ clipUrl: highlight.clipUrl, clipStoragePath: publicId + ".mp4", error: e.message }, { merge: true });

@@ -9,6 +9,35 @@ import { getFirebaseAuth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { Loader2, Sparkles, Play, RotateCcw, AlertCircle, CheckCircle2, Clock, Video, Eye, Film, Type, Zap, Scissors, ShieldCheck } from "lucide-react";
 import { formatDuration, timeAgo } from "@/lib/utils";
+
+function verifyCloudinaryVideoUrl(url: string, expectedCloud?: string): { ok: boolean; reason?: string; checks: Record<string, boolean> } {
+  const checks: Record<string, boolean> = {};
+  try {
+    const u = new URL(url);
+    checks["URL exists"] = !!url;
+    checks["HTTPS"] = u.protocol === "https:";
+    checks["Cloudinary domain"] = url.includes("res.cloudinary.com");
+    const cloudInUrl = url.match(/res\\.cloudinary\\.com\/([^/]+)\//)?.[1] || "";
+    if (expectedCloud) {
+      checks["Correct cloud name"] = cloudInUrl === expectedCloud;
+      checks["Not demo placeholder"] = cloudInUrl !== "demo" || expectedCloud === "demo";
+    } else {
+      checks["Correct cloud name"] = !!cloudInUrl;
+      checks["Not demo placeholder"] = cloudInUrl !== "demo";
+    }
+    checks["Resource type video"] = url.includes("/video/upload/");
+    checks["Not image/raw"] = !url.includes("/image/upload/") && !url.includes("/raw/upload/");
+    const ext = url.split("?")[0].split(".").pop()?.toLowerCase() || "";
+    checks["Browser compatible format"] = ["mp4","webm","mov","m4v"].includes(ext);
+    checks["Not HTML/JSON"] = !url.includes(".html") && !url.includes(".json");
+    checks["Actual uploaded asset"] = !url.includes("storage.mock") && !url.includes("storage.googleapis.com");
+    const ok = Object.values(checks).every(v => v);
+    const failed = Object.entries(checks).filter(([k,v]) => !v).map(([k]) => k).join(", ");
+    return { ok, reason: failed ? `Failed checks: ${failed}` : undefined, checks };
+  } catch (e:any) {
+    return { ok: false, reason: e.message, checks: { "Valid URL": false } };
+  }
+}
 import { toast } from "sonner";
 
 type Short = {
@@ -345,13 +374,30 @@ export function ShortsPanel({ videoId }: { videoId: string }) {
                       onLoadStart={() => setVideoLoading(prev=>({...prev, [s.shortId]: true}))}
                       onLoadedData={() => setVideoLoading(prev=>({...prev, [s.shortId]: false}))}
                       onCanPlay={() => setVideoLoading(prev=>({...prev, [s.shortId]: false}))}
-                      onError={(e)=> {
+                      onError={async (e)=> {
                         const el = e.currentTarget;
                         let msg = "Media error";
                         if (el.error) msg = `${el.error.message || 'Error'} (code ${el.error.code})`;
                         console.warn(`[ShortsPanel] video error ${s.shortId}`, msg, s.shortUrl);
+                        const cloudName = (typeof process !== "undefined" && (process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "")) || "";
+                        const verify = verifyCloudinaryVideoUrl(s.shortUrl || "", cloudName);
+                        let debug = "";
+                        if (el.error?.code === 4) {
+                          debug = ` — Format error code 4: ${verify.reason || 'unknown'}. Checks: ${JSON.stringify(verify.checks)}`;
+                          try {
+                            const head = s.shortUrl ? await fetch(s.shortUrl, { method: "HEAD" }) : null;
+                            if (head) {
+                              const ct = head.headers.get("content-type") || "(none)";
+                              debug += ` | HTTP ${head.status} Content-Type: ${ct} ${head.ok ? "(OK)" : "(FAIL)"} — ${ct.startsWith("video/") ? "is video" : "NOT video (HTML/JSON or image)"}`;
+                              if (!head.ok) debug += " — URL 404, resource not in Cloudinary or transformation unsupported";
+                              if (ct.includes("text/html") || ct.includes("application/json")) debug += " — Received HTML/JSON not video (check cloudName, public_id, resource_type video)";
+                            }
+                          } catch (err:any) {
+                            debug += ` | HEAD failed: ${err.message}`;
+                          }
+                        }
                         setVideoLoading(prev=>({...prev, [s.shortId]: false}));
-                        setVideoErrors(prev=>({...prev, [s.shortId]: msg}));
+                        setVideoErrors(prev=>({...prev, [s.shortId]: msg + debug}));
                       }}
                     />
                     <div className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded">9:16 • 1080×1920 • Cloudinary</div>

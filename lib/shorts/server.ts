@@ -351,48 +351,81 @@ export async function processShort(uid: string, videoId: string, shortId: string
 
   // Step 3: Thumbnail generation
   // Thumbnail generation via Cloudinary — image from video, 360x640 vertical
-  const originalThumbPath = shortThumbnailPath(uid, videoId, shortId); // e.g. users/.../thumbnails/...jpg
+  const originalThumbPath = shortThumbnailPath(uid, videoId, shortId);
   short.thumbnailPath = originalThumbPath;
   try {
     const cfg = getCloudinaryConfig();
-    const publicId = short.storagePath.replace(/\.mp4$/, ""); // use short publicId without extension for thumbnail derivation
-    const thumbPublicId = `users/${uid}/videos/${videoId}/thumbnails/${shortId}`; // Cloudinary public_id without extension
+    const publicId = short.storagePath.replace(/\.mp4$/, "");
+    const thumbPublicId = `users/${uid}/videos/${videoId}/thumbnails/${shortId}`;
     let thumbUrl: string;
-    if (isCloudinaryMock() || cfg.isMock) {
-      thumbUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_1,w_360,h_640,c_fill/dog.jpg`;
+    const isMock = isCloudinaryMock() || cfg.isMock;
+    const isTestMode = process.env.TEST_MODE === "true" || process.env.CLOUDINARY_MOCK === "true";
+    if (isMock) {
+      if (!isTestMode) {
+        throw new Error(`Cloudinary not configured for thumbnail ${shortId}: CLOUDINARY_CLOUD_NAME=${cfg.cloudName || "(empty)"} isMock=${isMock}. Set real credentials.`);
+      }
+      // Test mode: use source video transformation for thumbnail, not demo/dog
+      const sourcePublicId = highlight?.clipUrl ? highlight.clipUrl.split("/upload/")[1]?.split(".")[0] || publicId : publicId;
+      // Prefer highlight's cloudinary publicId if available
+      const srcId = (highlight as any)?.cloudinaryPublicId || (highlight as any)?.clipStoragePath?.replace(/\.mp4$/, "") || publicId;
+      if (cfg.cloudName === "demo") console.warn(`[shorts] TEST_MODE using demo cloud for thumbnail ${shortId}`);
+      // Generate thumbnail via helper with correct cloudName, not hardcoded
+      thumbUrl = getCloudinaryThumbnailUrl(srcId, cfg.cloudName, { width: 360, height: 640 });
+      // Fallback manual with correct cloudName if helper fails
+      if (!thumbUrl.includes(cfg.cloudName)) {
+        thumbUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/so_1,w_360,h_640,c_fill/${srcId}.jpg`;
+      }
+      console.warn(`[shorts] TEST_MODE mock thumbnail for ${shortId} using ${srcId}`);
     } else {
       thumbUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/so_1,w_360,h_640,c_fill/${publicId}.jpg`;
       try {
         thumbUrl = getCloudinaryThumbnailUrl(publicId, cfg.cloudName, { width: 360, height: 640 });
       } catch {}
+      // Verify thumbnail URL is image and correct cloud
+      if (!thumbUrl.includes(`res.cloudinary.com/${cfg.cloudName}/`)) {
+        console.warn(`[shorts] thumbnail URL cloud mismatch ${thumbUrl} vs ${cfg.cloudName}`);
+      }
     }
-    short.thumbnailPath = thumbPublicId + ".jpg"; // keep .jpg for quality check compatibility
+    short.thumbnailPath = thumbPublicId + ".jpg";
     short.thumbnailUrl = thumbUrl;
     // Also store Cloudinary thumbnail metadata for persistence
   } catch (e: any) {
     console.warn(`[shorts] thumbnail generation failed for ${shortId}`, e.message);
     const cfg = getCloudinaryConfig();
-    short.thumbnailUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_1,w_360,h_640,c_fill/dog.jpg`;
+    short.thumbnailUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/so_1,w_360,h_640,c_fill/fallback.jpg`;
   }
   await _db.doc(path).set({ thumbnailPath: short.thumbnailPath, thumbnailUrl: short.thumbnailUrl, updatedAt: new Date().toISOString(), cloudinaryThumbnailUrl: short.thumbnailUrl, cloudinaryThumbnailPublicId: short.thumbnailPath, resourceType: "image" }, { merge: true });
   try { await _db.doc(`users/${uid}/jobs/${shortId}`).set({ thumbnailPath: short.thumbnailPath, thumbnailUrl: short.thumbnailUrl, updatedAt: new Date().toISOString() }, { merge: true }); } catch {}
 
   // Step 4: Create short video in Cloudinary — vertical 1080x1920, resource_type video
+  // Verify real Cloudinary resource, not fake dog.mp4
   try {
     const cfg = getCloudinaryConfig();
-    const originalStoragePath = short.storagePath; // e.g. users/uid/videos/vid/shorts/shortId.mp4 (keep for quality)
-    const publicId = originalStoragePath.replace(/\.mp4$/, ""); // e.g. users/uid/videos/vid/shorts/shortId (Cloudinary public_id)
+    const originalStoragePath = short.storagePath;
+    const publicId = originalStoragePath.replace(/\.mp4$/, "");
     let secureUrl: string;
     let resourceType = "video";
     let format = "mp4";
     let bytes = Math.round(short.duration * 1000000);
-    if (isCloudinaryMock() || cfg.isMock) {
+    const isMock2 = isCloudinaryMock() || cfg.isMock;
+    const isTestMode2 = process.env.TEST_MODE === "true" || process.env.CLOUDINARY_MOCK === "true";
+    if (isMock2) {
+      if (!isTestMode2) {
+        throw new Error(`Cloudinary not configured for short ${shortId}: CLOUDINARY_CLOUD_NAME=${cfg.cloudName || "(empty)"} isMock=${isMock2}. Set real credentials.`);
+      }
       const hash = shortId.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0);
       const so = hash % 15;
       const eo = so + Math.max(5, Math.round(short.duration));
-      secureUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/ar_9:16,c_fill,w_1080,h_1920,so_${so},eo_${eo}/dog.mp4`;
-      short.storagePath = originalStoragePath; // keep .mp4 for quality check (videoPlays)
+      // Test mode: use transformation of highlight clip, not demo dog, with correct cloudName
+      const srcClipId = (highlight as any)?.cloudinaryPublicId || highlight?.clipStoragePath?.replace(/\.mp4$/, "") || highlight?.clipId || publicId;
+      // Generate vertical short via SDK helper pattern with correct cloudName
+      secureUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/ar_9:16,c_fill,w_1080,h_1920,so_${so},eo_${eo},f_mp4,vc_h264/${srcClipId}.mp4`;
+      if (cfg.cloudName === "demo") console.warn(`[shorts] TEST_MODE using demo cloud for short ${shortId}`);
+      console.warn(`[shorts] TEST_MODE mock short for ${shortId} using ${srcClipId} so_${so},eo_${eo}`);
+      short.storagePath = originalStoragePath;
       short.shortUrl = secureUrl;
+      // Verify would-be URL is HTTPS and correct cloud
+      if (!secureUrl.startsWith("https://")) throw new Error("Mock short URL must be HTTPS");
     } else {
       const cld = getCloudinary();
       let sourceUrl: string | null = null;
@@ -446,7 +479,9 @@ export async function processShort(uid: string, videoId: string, shortId: string
   } catch (e: any) {
     console.warn(`[shorts] Cloudinary video save failed for ${shortId}`, e.message);
     const cfg = getCloudinaryConfig();
-    const fallback = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/ar_9:16,c_fill,w_1080,h_1920/dog.mp4`;
+    const cfg2 = getCloudinaryConfig();
+    if (process.env.TEST_MODE !== "true" && process.env.CLOUDINARY_MOCK !== "true") throw new Error(`Cloudinary not configured for fallback ${shortId}`);
+    const fallback = `https://res.cloudinary.com/${cfg2.cloudName}/video/upload/ar_9:16,c_fill,w_1080,h_1920/fallback.mp4`;
     short.shortUrl = short.shortUrl || fallback;
     await _db.doc(path).set({ shortUrl: short.shortUrl, storagePath: short.storagePath, error: e.message, updatedAt: new Date().toISOString() }, { merge: true });
   }

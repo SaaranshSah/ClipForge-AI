@@ -53,7 +53,8 @@ export async function GET(req: NextRequest, { params }: { params: { jobId: strin
             const hash = clipId.split('').reduce((a,c)=>a+c.charCodeAt(0),0);
             const so = hash % 15;
             const eo = so + 5;
-            const secureUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_${so},eo_${eo}/dog.mp4`;
+            if (process.env.TEST_MODE !== "true" && process.env.CLOUDINARY_MOCK !== "true") throw new Error(`Cloudinary not configured for clip ${clipId}`);
+            const secureUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/so_${so},eo_${eo}/${publicId}.mp4`;
             updates.clipStoragePath = publicId;
             updates.cloudinaryPublicId = publicId;
             updates.cloudinarySecureUrl = secureUrl;
@@ -88,7 +89,8 @@ export async function GET(req: NextRequest, { params }: { params: { jobId: strin
           } catch {}
         } catch (e: any) {
           console.error("[clipforge] failed to move clip to Cloudinary:", e);
-          const fallback = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/dog.mp4`;
+          if (process.env.TEST_MODE !== "true" && process.env.CLOUDINARY_MOCK !== "true") throw new Error(`Cloudinary not configured for fallback`);
+          const fallback = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/${publicId}.mp4`;
           updates.clipStoragePath = publicId;
           updates.cloudinaryPublicId = publicId;
           updates.cloudinarySecureUrl = fallback;
@@ -99,7 +101,8 @@ export async function GET(req: NextRequest, { params }: { params: { jobId: strin
         // Mock mode: generate Cloudinary URL instead of storage.mock
         const hash = clipId.split('').reduce((a,c)=>a+c.charCodeAt(0),0);
         const so = hash % 15; const eo = so + 5;
-        const secureUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_${so},eo_${eo}/dog.mp4`;
+        if (process.env.TEST_MODE !== "true" && process.env.CLOUDINARY_MOCK !== "true") throw new Error(`Cloudinary not configured for clip ${clipId}`);
+        const secureUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/so_${so},eo_${eo}/${publicId}.mp4`;
         updates.clipStoragePath = publicId;
         updates.cloudinaryPublicId = publicId;
         updates.cloudinarySecureUrl = secureUrl;
