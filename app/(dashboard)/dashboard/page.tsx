@@ -11,6 +11,7 @@ import { DashboardClipForgeCard } from "@/components/clipforge/DashboardClipForg
 import { DashboardCloudinaryCard } from "@/components/cloudinary/DashboardCloudinaryCard";
 import { SyncingCard } from "@/components/dashboard/SyncingCard";
 import { HighlightsDashboardCard } from "@/components/highlights/HighlightsDashboardCard";
+import { ShortsDashboardCard } from "@/components/shorts/ShortsDashboardCard";
 
 export const dynamic = "force-dynamic";
 
@@ -140,6 +141,8 @@ export default async function DashboardPage() {
 
       {/* V3 AI Highlights — automatic pipeline status */}
       <HighlightsDashboardCard videoCount={stats.totalVideos} />
+      {/* V4 AI Shorts — best highlight → 9:16 vertical Short */}
+      <ShortsDashboardCard videoCount={stats.totalVideos} />
 
       <div className="grid lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Processing jobs */}

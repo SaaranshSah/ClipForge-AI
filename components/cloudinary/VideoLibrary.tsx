@@ -10,7 +10,8 @@ import { formatBytes, timeAgo, formatDuration } from "@/lib/utils";
 import { Trash2, Play, Eye, Loader2, Search, RefreshCw, Video, Clock, AlertCircle, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { HighlightsPanel } from "@/components/highlights/HighlightsPanel";
-import { Sparkles } from "lucide-react";
+import { ShortsPanel } from "@/components/shorts/ShortsPanel";
+import { Sparkles, Film as FilmIcon } from "lucide-react";
 
 type VideoDoc = {
   videoId: string;
@@ -47,6 +48,7 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [expandedHl, setExpandedHl] = useState<string | null>(null);
   const [hlSummary, setHlSummary] = useState<Record<string, HlSummary>>({});
+  const [shortsSummary, setShortsSummary] = useState<Record<string, { count: number; status?: string; progress?: number }>>({});
 
   const fetchHighlightsSummary = useCallback(async () => {
     try {
@@ -56,9 +58,10 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
       if (user) {
         try { const token = await user.getIdToken(); headers["Authorization"] = `Bearer ${token}`; } catch {}
       }
-      const [hlRes, jobRes] = await Promise.all([
+      const [hlRes, jobRes, shortRes] = await Promise.all([
         fetch("/api/highlights", { credentials: "include", headers, cache: "no-store" }),
         fetch("/api/highlights/jobs", { credentials: "include", headers, cache: "no-store" }),
+        fetch("/api/shorts", { credentials: "include", headers, cache: "no-store" }),
       ]);
       const hlMap: Record<string, HlSummary> = {};
       if (hlRes.ok) {
@@ -82,6 +85,24 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
         });
       }
       setHlSummary(hlMap);
+      if (shortRes.ok) {
+        const sData = await shortRes.json();
+        const byVideo: Record<string, { count: number; status?: string; progress?: number }> = {};
+        (sData.shorts || []).forEach((s: any) => {
+          const vid = s.sourceVideoId || s.videoId;
+          if (!vid) return;
+          byVideo[vid] = byVideo[vid] || { count: 0 };
+          byVideo[vid].count += 1;
+          // Keep active status if any short is processing
+          if (["QUEUED", "PROCESSING", "EDITING", "CAPTIONING", "QUALITY_CHECK", "RETRYING"].includes(s.status)) {
+            byVideo[vid].status = s.status;
+            byVideo[vid].progress = s.progress;
+          } else if (!byVideo[vid].status) {
+            byVideo[vid].status = s.status;
+          }
+        });
+        setShortsSummary(byVideo);
+      }
     } catch {}
   }, []);
 
@@ -249,6 +270,36 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
                   {v.status === "ready" && (
                     <div className="flex items-center gap-1 text-xs text-emerald-400"><CheckCircle2 className="h-3 w-3" /> Cloudinary ready</div>
                   )}
+                  {/* V4 Shorts inline summary */}
+                  {(() => {
+                    const ss = shortsSummary[v.videoId];
+                    if (!ss) {
+                      return (
+                        <div className="rounded-lg border border-dashed border-zinc-800 bg-zinc-950 p-2 flex items-center justify-between">
+                          <span className="text-xs text-zinc-500 flex items-center gap-1.5"><FilmIcon className="h-3 w-3 text-zinc-600" /> No Shorts yet — best highlight → 9:16</span>
+                          <Badge variant="secondary" className="text-xs">—</Badge>
+                        </div>
+                      );
+                    }
+                    const isActive = ["QUEUED", "PROCESSING", "EDITING", "CAPTIONING", "QUALITY_CHECK", "RETRYING"].includes(ss.status || "");
+                    const isDone = ss.status === "COMPLETED";
+                    const isFailed = ss.status === "FAILED";
+                    return (
+                      <div className={`rounded-lg border p-2 flex items-center justify-between ${isDone ? "border-pink-900/50 bg-pink-950/10" : isFailed ? "border-red-900/50 bg-red-950/10" : isActive ? "border-pink-900/30 bg-pink-950/5" : "border-zinc-800 bg-zinc-950"}`}>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FilmIcon className={`h-3.5 w-3.5 shrink-0 ${isDone ? "text-pink-400" : isActive ? "text-pink-300" : isFailed ? "text-red-400" : "text-zinc-600"}`} />
+                          <div className="min-w-0">
+                            <div className="text-xs font-medium flex items-center gap-1.5">
+                              {isActive ? `${ss.status?.toLowerCase()} ${ss.progress ?? 0}%` : isDone ? `${ss.count} Short${ss.count > 1 ? "s" : ""} ready 1080×1920` : `${ss.count} Short${ss.count > 1 ? "s" : ""} • ${ss.status?.toLowerCase()}`}
+                              {isActive && <Loader2 className="h-3 w-3 animate-spin text-pink-400" />}
+                            </div>
+                            <div className="text-[11px] text-zinc-500 font-mono truncate">9:16 • shorts/*.mp4 + .jpg</div>
+                          </div>
+                        </div>
+                        <Badge variant={isDone ? "success" : isFailed ? "destructive" : "secondary"} className="capitalize text-xs shrink-0">{ss.status?.toLowerCase() || `${ss.count} shorts`}</Badge>
+                      </div>
+                    );
+                  })()}
                   {/* V3 AI Highlights inline */}
                   {(() => {
                     const hl = hlSummary[v.videoId];
@@ -302,13 +353,14 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
                     </Button>
                   </div>
                   {expandedHl === v.videoId && (
-                    <div className="pt-2">
+                    <div className="pt-2 space-y-3">
                       <HighlightsPanel videoId={v.videoId} />
+                      <ShortsPanel videoId={v.videoId} />
                     </div>
                   )}
                   <p className="text-[11px] font-mono text-zinc-600 truncate">{v.cloudinaryPublicId}</p>
                   <p className="text-[11px] text-zinc-600">Folder: <span className="font-mono">users/{v.ownerId}/videos/{v.videoId}/original/</span></p>
-                  <p className="text-[11px] text-zinc-600 font-mono">clips: <span className="font-mono">users/{v.ownerId}/videos/{v.videoId}/clips/*.mp4</span> • highlights: <span className="font-mono">…/highlights</span></p>
+                  <p className="text-[11px] text-zinc-600 font-mono">clips: <span className="font-mono">users/{v.ownerId}/videos/{v.videoId}/clips/*.mp4</span> • highlights: <span className="font-mono">…/highlights</span> • shorts: <span className="font-mono">…/shorts/*.mp4 + .jpg</span></p>
                 </CardContent>
               </Card>
             );

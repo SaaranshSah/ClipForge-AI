@@ -553,6 +553,16 @@ export async function generateHighlightsForJob(uid: string, videoId: string, job
   } catch {}
 
   console.log(`[highlights] generated ${highlights.length} highlights for ${uid}/${videoId} job ${jobId}`);
+
+  // V4: auto-queue shorts for best highlight(s) — fire-and-forget, non-blocking for highlights flow
+  try {
+    const { autoQueueShortsForVideo } = await import("@/lib/shorts/server");
+    // Don't await long; but for mock it's fast, so await short queue (creates QUEUED short)
+    await autoQueueShortsForVideo(uid, videoId, { captionStyle: "Clean", maxPerVideo: 1 });
+  } catch (e) {
+    console.warn("[highlights] shorts auto-queue failed (non-blocking)", (e as any)?.message);
+  }
+
   return highlights;
 }
 

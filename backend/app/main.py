@@ -164,3 +164,89 @@ async def highlights_worker_run(iterations: int = 5, delay: float = 2.0, discove
 async def highlights_discover(authorized: bool = Depends(verify_api_key)):
     """Discover eligible videos and auto-queue (idempotent)."""
     return await _tick_highlights_frontend(discover=True)
+
+# V4 — Shorts background worker (best highlight → 9:16 Short)
+# Worker delegates heavy work to Next.js /api/worker/shorts/tick which does Firestore polling.
+# No FFmpeg in Netlify Functions — worker container ticks every ~10s.
+
+async def _tick_shorts_frontend(worker_id: str = WORKER_ID, discover: bool = False):
+    """Call Next.js shorts worker tick endpoint to process one Short job."""
+    url = f"{FRONTEND_URL.rstrip('/')}/api/worker/shorts/tick"
+    if discover:
+        url += "?discover=1"
+    headers = {}
+    if WORKER_SECRET:
+        headers["x-worker-secret"] = WORKER_SECRET
+        headers["x-worker-id"] = worker_id
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.post(url, json={"workerId": worker_id, "discover": discover}, headers=headers)
+            return resp.json()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+@app.get("/worker/shorts/status", tags=["worker"])
+async def shorts_worker_status(authorized: bool = Depends(verify_api_key)):
+    """Check pending Shorts jobs via frontend tick endpoint (GET)."""
+    url = f"{FRONTEND_URL.rstrip('/')}/api/worker/shorts/tick"
+    headers = {}
+    if WORKER_SECRET:
+        headers["x-worker-secret"] = WORKER_SECRET
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.get(url, headers=headers)
+            return resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+@app.post("/worker/shorts/tick", tags=["worker"])
+async def shorts_worker_tick(background_tasks: BackgroundTasks, discover: bool = False, authorized: bool = Depends(verify_api_key)):
+    """
+    Worker tick — processes one QUEUED/RETRYING/PROCESSING Short job (EDITING→CAPTIONING→thumbnail→QUALITY_CHECK→COMPLETED).
+    Enforces 8 quality checks before READY. Query ?discover=true to auto-queue best highlights (idempotent).
+    """
+    result = await _tick_shorts_frontend(discover=discover)
+    return result
+
+@app.post("/worker/shorts/run", tags=["worker"])
+async def shorts_worker_run(iterations: int = 5, delay: float = 2.0, discover: bool = False, authorized: bool = Depends(verify_api_key)):
+    """
+    Run N shorts ticks sequentially — local testing without cron.
+    Example: POST /worker/shorts/run?iterations=10&delay=1.5&discover=true
+    """
+    results = []
+    for i in range(max(1, min(iterations, 20))):
+        r = await _tick_shorts_frontend(discover=discover if i == 0 else False)
+        results.append(r)
+        if r.get("idle"):
+            break
+        if delay > 0 and i < iterations - 1:
+            await asyncio.sleep(delay)
+    return {"ok": True, "iterations": len(results), "results": results}
+
+@app.get("/worker/shorts/discover", tags=["worker"])
+async def shorts_discover(authorized: bool = Depends(verify_api_key)):
+    """Discover eligible highlights and auto-queue Shorts (idempotent)."""
+    return await _tick_shorts_frontend(discover=True)
+
+@app.post("/worker/tick", tags=["worker"])
+async def combined_tick(discover: bool = False, authorized: bool = Depends(verify_api_key)):
+    """Combined tick — processes one highlights job then one Shorts job (V3+V4 pipeline)."""
+    hl = await _tick_highlights_frontend(discover=discover)
+    sh = await _tick_shorts_frontend(discover=discover)
+    return {"ok": True, "highlights": hl, "shorts": sh, "discover": discover}
+
+@app.post("/worker/run", tags=["worker"])
+async def combined_run(iterations: int = 5, delay: float = 2.0, discover: bool = False, authorized: bool = Depends(verify_api_key)):
+    """Run N combined ticks (highlights + shorts) sequentially."""
+    results = []
+    for i in range(max(1, min(iterations, 10))):
+        r = await combined_tick(discover=discover if i == 0 else False)
+        results.append(r)
+        hl_idle = r.get("highlights", {}).get("idle")
+        sh_idle = r.get("shorts", {}).get("idle")
+        if hl_idle and sh_idle:
+            break
+        if delay > 0 and i < iterations - 1:
+            await asyncio.sleep(delay)
+    return {"ok": True, "iterations": len(results), "results": results}
