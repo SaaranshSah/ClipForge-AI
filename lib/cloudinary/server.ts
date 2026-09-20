@@ -9,10 +9,40 @@ import crypto from "crypto";
  * Use signed uploads: server generates signature, client uploads directly to Cloudinary.
  */
 
+// Parse CLOUDINARY_URL if present: cloudinary://<apiKey>:<apiSecret>@<cloudName>
+function parseCloudinaryUrl(url?: string): { cloudName: string; apiKey: string; apiSecret: string } | null {
+  if (!url || !url.startsWith("cloudinary://")) return null;
+  try {
+    // Use URL parser — cloudinary://apikey:secret@cloud_name
+    const u = new URL(url);
+    const apiKey = decodeURIComponent(u.username);
+    const apiSecret = decodeURIComponent(u.password);
+    const cloudName = u.hostname;
+    if (apiKey && apiSecret && cloudName) return { cloudName, apiKey, apiSecret };
+  } catch {}
+  // Fallback manual parse
+  try {
+    const withoutProtocol = url.replace("cloudinary://", "");
+    const atIdx = withoutProtocol.lastIndexOf("@");
+    if (atIdx === -1) return null;
+    const creds = withoutProtocol.slice(0, atIdx);
+    const cloudName = withoutProtocol.slice(atIdx + 1).split("/")[0].split("?")[0];
+    const colonIdx = creds.indexOf(":");
+    if (colonIdx === -1) return null;
+    const apiKey = creds.slice(0, colonIdx);
+    const apiSecret = creds.slice(colonIdx + 1);
+    if (apiKey && apiSecret && cloudName) return { cloudName, apiKey, apiSecret };
+  } catch {}
+  return null;
+}
+
 export function getCloudinaryConfig() {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "";
-  const apiKey = process.env.CLOUDINARY_API_KEY || "";
-  const apiSecret = process.env.CLOUDINARY_API_SECRET || "";
+  // Prefer CLOUDINARY_URL (server-only, contains secret) — never expose to client
+  const urlParsed = parseCloudinaryUrl(process.env.CLOUDINARY_URL);
+
+  const cloudName = urlParsed?.cloudName || process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "";
+  const apiKey = urlParsed?.apiKey || process.env.CLOUDINARY_API_KEY || "";
+  const apiSecret = urlParsed?.apiSecret || process.env.CLOUDINARY_API_SECRET || "";
 
   // Mock only when explicitly enabled — production (TEST_MODE=false) must use real Cloudinary
   // Do NOT fallback to "demo" — use actual cloud name from env; if missing, isMock will be true and caller should show real config error
@@ -22,7 +52,8 @@ export function getCloudinaryConfig() {
 
   if (isMock) {
     if (missingCreds) {
-      console.warn("[cloudinary] Cloudinary not configured — Set CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET for production. Current cloudName=" + (cloudName || "(empty)") + " TEST_MODE=" + process.env.TEST_MODE);
+      // Never log secret; only cloudName and mock flags
+      console.warn("[cloudinary] Cloudinary not configured — Set CLOUDINARY_URL or CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET for production. Current cloudName=" + (cloudName || "(empty)") + " TEST_MODE=" + process.env.TEST_MODE);
       const isTest = process.env.TEST_MODE === "true" || process.env.CLOUDINARY_MOCK === "true";
       if (!isTest) {
         // Production: do NOT hardcode demo — return empty to force real config error
