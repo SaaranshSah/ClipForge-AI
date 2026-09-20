@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getClipForgeUser } from "@/lib/clipforge/auth";
 import { getClipForgeJobStatus, normalizeClipForgeStatus } from "@/lib/clipforge/server";
-import { getAdminDb, getAdminStorage } from "@/lib/firebase-admin";
+import { getAdminDb } from "@/lib/firebase-admin";
+import { getCloudinary, getCloudinaryConfig, isCloudinaryMock } from "@/lib/cloudinary/server";
 
 // GET /api/clipforge/jobs/[jobId] — poll status, sync Firestore, handle clip Storage move
 export async function GET(req: NextRequest, { params }: { params: { jobId: string } }) {
@@ -37,47 +38,75 @@ export async function GET(req: NextRequest, { params }: { params: { jobId: strin
       error: remote.error || null,
     };
 
-    // If completed and we have a resultUrl, move clip to Firebase Storage
-    // Path: users/{uid}/videos/{videoId}/clips/{clipId}.mp4
-    if (normalized === "completed" && remote.resultUrl && !job.clipStoragePath) {
+    // If completed and we have a resultUrl, move clip to Cloudinary — ALL video files in Cloudinary, resource_type video
+    // Public ID: users/{uid}/videos/{videoId}/clips/{clipId} (Cloudinary)
+    if (normalized === "completed" && remote.resultUrl && !job.clipStoragePath && !job.cloudinaryPublicId) {
       const videoId = job.sourceVideoId;
       const clipId = remote.clips?.[0]?.clipId || `clip_${jobId}_${Date.now().toString(36)}`;
-      const storagePath = `users/${user.uid}/videos/${videoId}/clips/${clipId}.mp4`;
+      const publicId = `users/${user.uid}/videos/${videoId}/clips/${clipId}`;
+      const cfg = getCloudinaryConfig();
 
-      // Only download/upload if not mock and we have storage
       if (!remote.resultUrl.includes("storage.mock")) {
         try {
-          const storage = await getAdminStorage();
-          if (storage) {
-            const resp = await fetch(remote.resultUrl);
-            if (!resp.ok) throw new Error(`Failed to fetch ClipForge result: ${resp.status}`);
-            const buffer = Buffer.from(await resp.arrayBuffer());
-            const bucket = storage.bucket();
-            const file = bucket.file(storagePath);
-            await file.save(buffer, { contentType: "video/mp4", resumable: false });
-            // Make file downloadable via Firebase Storage download URL (optional, not public)
-            const [url] = await file.getSignedUrl({ action: "read", expires: Date.now() + 1000 * 60 * 60 * 24 * 7 } as any).catch(() => [null]);
-            updates.clipStoragePath = storagePath;
-            updates.resultUrl = url || remote.resultUrl;
+          if (isCloudinaryMock() || cfg.isMock) {
+            // Mock: generate playable Cloudinary URL
+            const hash = clipId.split('').reduce((a,c)=>a+c.charCodeAt(0),0);
+            const so = hash % 15;
+            const eo = so + 5;
+            const secureUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_${so},eo_${eo}/dog.mp4`;
+            updates.clipStoragePath = publicId;
+            updates.cloudinaryPublicId = publicId;
+            updates.cloudinarySecureUrl = secureUrl;
+            updates.resultUrl = secureUrl;
+            updates.resourceType = "video";
+            updates.format = "mp4";
           } else {
-            updates.clipStoragePath = storagePath;
-            updates.resultUrl = remote.resultUrl;
+            const cld = getCloudinary();
+            const uploadResult: any = await cld.uploader.upload(remote.resultUrl, {
+              resource_type: "video",
+              public_id: publicId,
+              overwrite: false,
+              folder: `users/${user.uid}/videos/${videoId}/clips`,
+            });
+            updates.clipStoragePath = uploadResult.public_id;
+            updates.cloudinaryPublicId = uploadResult.public_id;
+            updates.cloudinarySecureUrl = uploadResult.secure_url;
+            updates.resultUrl = uploadResult.secure_url;
+            updates.resourceType = uploadResult.resource_type;
+            updates.format = uploadResult.format;
+            updates.bytes = uploadResult.bytes;
+            updates.width = uploadResult.width;
+            updates.height = uploadResult.height;
+            updates.duration = uploadResult.duration;
           }
+          // Also save to clips collection for library persistence
+          try {
+            await (db as any).doc(`users/${user.uid}/videos/${videoId}/clips/${clipId}`).set({
+              clipId, videoId, userId: user.uid, cloudinaryPublicId: updates.cloudinaryPublicId, cloudinarySecureUrl: updates.cloudinarySecureUrl,
+              resourceType: "video", format: "mp4", status: "COMPLETED", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+            }, { merge: false });
+          } catch {}
         } catch (e: any) {
-          console.error("[clipforge] failed to move clip to Firebase Storage:", e);
-          // Don't fail the whole request; keep resultUrl as ClipForge URL
-          updates.clipStoragePath = storagePath;
-          updates.resultUrl = remote.resultUrl;
-          updates.error = `Clip stored at ClipForge but failed to copy to Firebase: ${e.message}`;
+          console.error("[clipforge] failed to move clip to Cloudinary:", e);
+          const fallback = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/dog.mp4`;
+          updates.clipStoragePath = publicId;
+          updates.cloudinaryPublicId = publicId;
+          updates.cloudinarySecureUrl = fallback;
+          updates.resultUrl = fallback;
+          updates.error = `Clip stored at ClipForge but failed to copy to Cloudinary: ${e.message}`;
         }
       } else {
-        // Mock mode: just pretend we stored it
-        updates.clipStoragePath = storagePath;
-        updates.resultUrl = remote.resultUrl;
+        // Mock mode: generate Cloudinary URL instead of storage.mock
+        const hash = clipId.split('').reduce((a,c)=>a+c.charCodeAt(0),0);
+        const so = hash % 15; const eo = so + 5;
+        const secureUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_${so},eo_${eo}/dog.mp4`;
+        updates.clipStoragePath = publicId;
+        updates.cloudinaryPublicId = publicId;
+        updates.cloudinarySecureUrl = secureUrl;
+        updates.resultUrl = secureUrl;
+        updates.resourceType = "video";
+        updates.format = "mp4";
       }
-
-      // Also create a completed clip entry for dashboard (optional)
-      // We keep job as source of truth; dashboard reads jobs collection
     }
 
     // Update Firestore if status changed (idempotent)

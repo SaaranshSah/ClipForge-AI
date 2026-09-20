@@ -1,15 +1,16 @@
-// Server-only Firebase Admin helper
+// Server-only Firebase Admin helper — V4: Firestore + Auth only, Cloudinary for video storage
 // We support two modes:
 // 1) Full Admin with service account (FIREBASE_ADMIN_CREDENTIALS or FIREBASE_SERVICE_ACCOUNT)
 // 2) Fallback mock that keeps Firestore in memory for local dev without credentials
 // This file is server-only — never import in client components.
+// Firebase Storage removed per V4 architecture — all video files (original/clips/shorts/thumbnails) use Cloudinary resource_type video
 import "server-only";
 
 type AdminApp = any;
 
 let adminApp: AdminApp | null = (globalThis as any).__clipforgeAdminApp ?? null;
 let adminDb: any = (globalThis as any).__clipforgeAdminDb ?? null;
-let adminStorage: any = (globalThis as any).__clipforgeAdminStorage ?? null;
+let adminStorage: any = null; // Deprecated per V4 — Cloudinary for video storage
 let isMock: boolean = (globalThis as any).__clipforgeIsMock ?? false;
 
 // In-memory mock for Firestore when admin not configured
@@ -150,11 +151,7 @@ export async function getAdminDb() {
     (globalThis as any).__clipforgeAdminApp = adminApp;
     adminDb = admin.firestore();
     (globalThis as any).__clipforgeAdminDb = adminDb;
-    // Optional storage
-    try {
-      adminStorage = admin.storage();
-      (globalThis as any).__clipforgeAdminStorage = adminStorage;
-    } catch {}
+    // Firebase Storage init removed per V4 — video files use Cloudinary (resource_type video)
     return adminDb;
   } catch (e) {
     console.warn("[firebase-admin] init failed, falling back to mock:", (e as Error).message);
@@ -164,11 +161,12 @@ export async function getAdminDb() {
   }
 }
 
-export async function getAdminStorage() {
-  if (adminStorage) return adminStorage;
-  await getAdminDb();
-  return adminStorage;
+export async function getAdminStorage(): Promise<any> {
+  console.warn("[firebase-admin] getAdminStorage deprecated per V4 — use Cloudinary for video files (resource_type video)");
+  return null;
 }
+export { adminStorage };
+export const storageBucket: string = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "clipforge-ai-910f9.firebasestorage.app";
 
 // Helper to verify Firebase ID token server-side without admin (fallback)
 export async function verifyFirebaseIdToken(idToken: string): Promise<{ uid: string; email?: string } | null> {

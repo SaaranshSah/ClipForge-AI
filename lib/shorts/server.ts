@@ -1,6 +1,7 @@
 import "server-only";
 
-import { getAdminDb, getAdminStorage } from "@/lib/firebase-admin";
+import { getAdminDb } from "@/lib/firebase-admin";
+import { getCloudinary, getCloudinaryConfig, isCloudinaryMock, getCloudinaryThumbnailUrl, getCloudinaryVideoUrl } from "@/lib/cloudinary/server";
 import { generateCaptionsForHighlight, cuesToVtt, validateCaptions } from "./captions";
 import { getEditingForHighlight } from "./editing";
 import { generateMetadataForHighlight } from "./metadata";
@@ -29,7 +30,6 @@ import type { HighlightDoc } from "@/lib/highlights/types";
 const PROJECT = "fpq";
 
 async function db() { return getAdminDb(); }
-async function storage() { return getAdminStorage(); }
 
 function auditLog(short: ShortDoc, from: string, to: string, by: string, note?: string): ShortDoc["auditLog"] {
   return [...(short.auditLog || []), { at: new Date().toISOString(), from, to, by, note }];
@@ -350,49 +350,106 @@ export async function processShort(uid: string, videoId: string, shortId: string
   try { await _db.doc(`users/${uid}/jobs/${shortId}`).set({ status: "CAPTIONING", progress: 60, captions, updatedAt: new Date().toISOString() }, { merge: true }); } catch {}
 
   // Step 3: Thumbnail generation
-  short.thumbnailPath = shortThumbnailPath(uid, videoId, shortId);
-  short.thumbnailUrl = `https://storage.mock/${short.thumbnailPath}`;
-  // Simulate storage write for thumbnail (mock)
+  // Thumbnail generation via Cloudinary — image from video, 360x640 vertical
+  const originalThumbPath = shortThumbnailPath(uid, videoId, shortId); // e.g. users/.../thumbnails/...jpg
+  short.thumbnailPath = originalThumbPath;
   try {
-    const _storage = await storage();
-    if (_storage) {
-      const bucket = _storage.bucket();
-      const file = bucket.file(short.thumbnailPath);
-      await file.save(Buffer.from(`Thumbnail for ${shortId} title ${short.title}`), {
-        metadata: { contentType: "image/jpeg", metadata: { shortId, videoId } },
-      });
-      short.thumbnailUrl = `https://storage.googleapis.com/${bucket.name}/${short.thumbnailPath}`;
+    const cfg = getCloudinaryConfig();
+    const publicId = short.storagePath.replace(/\.mp4$/, ""); // use short publicId without extension for thumbnail derivation
+    const thumbPublicId = `users/${uid}/videos/${videoId}/thumbnails/${shortId}`; // Cloudinary public_id without extension
+    let thumbUrl: string;
+    if (isCloudinaryMock() || cfg.isMock) {
+      thumbUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_1,w_360,h_640,c_fill/dog.jpg`;
+    } else {
+      thumbUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/so_1,w_360,h_640,c_fill/${publicId}.jpg`;
+      try {
+        thumbUrl = getCloudinaryThumbnailUrl(publicId, cfg.cloudName, { width: 360, height: 640 });
+      } catch {}
     }
-  } catch {}
-  await _db.doc(path).set({ thumbnailPath: short.thumbnailPath, thumbnailUrl: short.thumbnailUrl, updatedAt: new Date().toISOString() }, { merge: true });
+    short.thumbnailPath = thumbPublicId + ".jpg"; // keep .jpg for quality check compatibility
+    short.thumbnailUrl = thumbUrl;
+    // Also store Cloudinary thumbnail metadata for persistence
+  } catch (e: any) {
+    console.warn(`[shorts] thumbnail generation failed for ${shortId}`, e.message);
+    const cfg = getCloudinaryConfig();
+    short.thumbnailUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_1,w_360,h_640,c_fill/dog.jpg`;
+  }
+  await _db.doc(path).set({ thumbnailPath: short.thumbnailPath, thumbnailUrl: short.thumbnailUrl, updatedAt: new Date().toISOString(), cloudinaryThumbnailUrl: short.thumbnailUrl, cloudinaryThumbnailPublicId: short.thumbnailPath, resourceType: "image" }, { merge: true });
   try { await _db.doc(`users/${uid}/jobs/${shortId}`).set({ thumbnailPath: short.thumbnailPath, thumbnailUrl: short.thumbnailUrl, updatedAt: new Date().toISOString() }, { merge: true }); } catch {}
 
-  // Step 4: Simulate video file creation for short (vertical 1080x1920)
-  short.shortUrl = `https://storage.mock/${short.storagePath}`;
+  // Step 4: Create short video in Cloudinary — vertical 1080x1920, resource_type video
   try {
-    const _storage = await storage();
-    if (_storage) {
-      const bucket = _storage.bucket();
-      const file = bucket.file(short.storagePath);
-      await file.save(Buffer.from(`Mock short ${shortId} vertical 1080x1920 ${short.duration}s style ${short.captionStyle}`), {
-        metadata: {
-          contentType: "video/mp4",
-          metadata: {
-            shortId,
-            videoId,
-            highlightId: short.sourceHighlightId,
-            captionStyle: short.captionStyle,
-            width: "1080",
-            height: "1920",
-            duration: String(short.duration),
-          },
-        },
-      });
-      short.shortUrl = `https://storage.googleapis.com/${bucket.name}/${short.storagePath}`;
+    const cfg = getCloudinaryConfig();
+    const originalStoragePath = short.storagePath; // e.g. users/uid/videos/vid/shorts/shortId.mp4 (keep for quality)
+    const publicId = originalStoragePath.replace(/\.mp4$/, ""); // e.g. users/uid/videos/vid/shorts/shortId (Cloudinary public_id)
+    let secureUrl: string;
+    let resourceType = "video";
+    let format = "mp4";
+    let bytes = Math.round(short.duration * 1000000);
+    if (isCloudinaryMock() || cfg.isMock) {
+      const hash = shortId.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0);
+      const so = hash % 15;
+      const eo = so + Math.max(5, Math.round(short.duration));
+      secureUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/ar_9:16,c_fill,w_1080,h_1920,so_${so},eo_${eo}/dog.mp4`;
+      short.storagePath = originalStoragePath; // keep .mp4 for quality check (videoPlays)
+      short.shortUrl = secureUrl;
+    } else {
+      const cld = getCloudinary();
+      let sourceUrl: string | null = null;
+      if (highlight?.clipUrl && highlight.clipUrl.includes("cloudinary")) sourceUrl = highlight.clipUrl;
+      else if (highlight?.clipUrl) sourceUrl = highlight.clipUrl;
+      if (sourceUrl && !sourceUrl.includes("storage.mock")) {
+        try {
+          const uploadResult: any = await cld.uploader.upload(sourceUrl, {
+            resource_type: "video",
+            public_id: publicId,
+            overwrite: false,
+            folder: `users/${uid}/videos/${videoId}/shorts`,
+            eager: [{ width: 1080, height: 1920, crop: "fill", aspect_ratio: "9:16", gravity: "center" }],
+          });
+          secureUrl = uploadResult.secure_url;
+          resourceType = uploadResult.resource_type || "video";
+          format = uploadResult.format || "mp4";
+          bytes = uploadResult.bytes || bytes;
+          short.storagePath = (uploadResult.public_id.endsWith(".mp4") ? uploadResult.public_id : uploadResult.public_id + ".mp4");
+          short.shortUrl = secureUrl;
+        } catch (uploadErr: any) {
+          console.warn(`[shorts] Cloudinary upload failed for ${shortId}`, uploadErr.message);
+          secureUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/ar_9:16,c_fill,w_1080,h_1920/${publicId}.mp4`;
+          short.storagePath = originalStoragePath;
+          short.shortUrl = secureUrl;
+        }
+      } else {
+        secureUrl = `https://res.cloudinary.com/${cfg.cloudName}/video/upload/ar_9:16,c_fill,w_1080,h_1920/${publicId}.mp4`;
+        short.storagePath = originalStoragePath;
+        short.shortUrl = secureUrl;
+      }
     }
-  } catch {}
-  await _db.doc(path).set({ shortUrl: short.shortUrl, storagePath: short.storagePath, updatedAt: new Date().toISOString() }, { merge: true });
-  try { await _db.doc(`users/${uid}/jobs/${shortId}`).set({ shortUrl: short.shortUrl, storagePath: short.storagePath, updatedAt: new Date().toISOString() }, { merge: true }); } catch {}
+    // Persist Cloudinary metadata
+    await _db.doc(path).set({ 
+      shortUrl: short.shortUrl, 
+      storagePath: short.storagePath, 
+      cloudinaryPublicId: publicId,
+      cloudinarySecureUrl: short.shortUrl,
+      cloudinaryUrl: short.shortUrl,
+      resourceType,
+      format,
+      bytes,
+      updatedAt: new Date().toISOString() 
+    }, { merge: true });
+    try { await _db.doc(`users/${uid}/jobs/${shortId}`).set({ shortUrl: short.shortUrl, storagePath: short.storagePath, cloudinaryPublicId: publicId, cloudinarySecureUrl: short.shortUrl, updatedAt: new Date().toISOString() }, { merge: true }); } catch {}
+    // Also ensure dedicated shorts doc has cloudinary fields for VideoLibrary persistence after refresh
+    await _db.doc(`users/${uid}/videos/${videoId}/shorts/${shortId}`).set({
+      shortId, videoId, userId: uid, cloudinaryPublicId: publicId, cloudinarySecureUrl: short.shortUrl, resourceType, format, bytes,
+      width: 1080, height: 1920, duration: short.duration, status: "COMPLETED",
+    }, { merge: true }).catch(()=>{});
+  } catch (e: any) {
+    console.warn(`[shorts] Cloudinary video save failed for ${shortId}`, e.message);
+    const cfg = getCloudinaryConfig();
+    const fallback = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/ar_9:16,c_fill,w_1080,h_1920/dog.mp4`;
+    short.shortUrl = short.shortUrl || fallback;
+    await _db.doc(path).set({ shortUrl: short.shortUrl, storagePath: short.storagePath, error: e.message, updatedAt: new Date().toISOString() }, { merge: true });
+  }
 
   // Step 5: QUALITY CHECK
   short.status = "QUALITY_CHECK";

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { getFirebaseAuth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 import { formatBytes, timeAgo, formatDuration } from "@/lib/utils";
 import { Trash2, Play, Eye, Loader2, Search, RefreshCw, Video, Clock, AlertCircle, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
@@ -43,6 +44,10 @@ type HlSummary = {
 export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
   const [videos, setVideos] = useState<VideoDoc[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authUser, setAuthUser] = useState<any>(null);
+  const [videoErrors, setVideoErrors] = useState<Record<string, string>>({});
+  const [videoLoading, setVideoLoading] = useState<Record<string, boolean>>({});
   const [deleting, setDeleting] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [previewId, setPreviewId] = useState<string | null>(null);
@@ -53,7 +58,7 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
   const fetchHighlightsSummary = useCallback(async () => {
     try {
       const auth = getFirebaseAuth();
-      const user = auth.currentUser;
+      const user = authUser || auth.currentUser;
       const headers: Record<string, string> = {};
       if (user) {
         try { const token = await user.getIdToken(); headers["Authorization"] = `Bearer ${token}`; } catch {}
@@ -110,7 +115,7 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
     setLoading(true);
     try {
       const auth = getFirebaseAuth();
-      const user = auth.currentUser;
+      const user = authUser || auth.currentUser;
       const headers: Record<string, string> = {};
       if (user) {
         try {
@@ -120,7 +125,9 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
       }
       const res = await fetch("/api/cloudinary/videos", { credentials: "include", headers, cache: "no-store" });
       if (res.status === 401) {
-        setVideos([]);
+        // Don't clear if auth is still loading — retry will happen when auth ready
+        if (!authLoading) setVideos([]);
+        else console.log("[VideoLibrary] 401 while authLoading, will retry after auth ready");
         return;
       }
       if (!res.ok) throw new Error("Failed");
@@ -133,17 +140,43 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
     } finally {
       setLoading(false);
     }
-  }, [fetchHighlightsSummary]);
+  }, [fetchHighlightsSummary, authUser, authLoading]);
+
+  // Auth-ready effect — wait for Firebase Auth to be ready before fetching, and re-fetch when auth changes (refresh fix)
+  useEffect(() => {
+    const auth = getFirebaseAuth();
+    setAuthLoading(true);
+    // Set immediately if already available
+    if (auth.currentUser) {
+      setAuthUser(auth.currentUser);
+      setAuthLoading(false);
+      fetchVideos();
+    }
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setAuthUser(u);
+      setAuthLoading(false);
+      if (u) {
+        fetchVideos();
+      } else {
+        setVideos([]);
+        setLoading(false);
+      }
+    });
+    return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // RefreshKey triggers refetch after upload
+  useEffect(() => {
+    if (refreshKey !== undefined && !authLoading && authUser) fetchVideos();
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    fetchVideos();
-  }, [fetchVideos, refreshKey]);
-
-  useEffect(() => {
-    // Poll highlights summary every 8s for dashboard progress updates
+    // Poll highlights summary every 8s for dashboard progress updates (only when authenticated)
+    if (authLoading || !authUser) return;
     const iv = setInterval(fetchHighlightsSummary, 8000);
     return () => clearInterval(iv);
-  }, [fetchHighlightsSummary]);
+  }, [fetchHighlightsSummary, authLoading, authUser]);
 
   const handleDelete = async (videoId: string) => {
     if (!confirm(`Delete video ${videoId}? This removes Cloudinary asset and Firestore metadata.`)) return;
@@ -182,11 +215,11 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
     return null;
   };
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <Card className="bg-zinc-900 border-zinc-800">
         <CardContent className="p-8 flex items-center justify-center gap-2 text-zinc-500">
-          <Loader2 className="h-5 w-5 animate-spin" /> Loading library…
+          <Loader2 className="h-5 w-5 animate-spin" /> {authLoading ? "Checking authentication…" : "Loading library…"}
         </CardContent>
       </Card>
     );
@@ -223,7 +256,44 @@ export function VideoLibrary({ refreshKey }: { refreshKey?: number }) {
               <Card key={v.videoId} className="bg-zinc-900 border-zinc-800 overflow-hidden group hover:border-zinc-700 transition-colors">
                 <div className="relative aspect-video bg-black overflow-hidden">
                   {isPreview ? (
-                    <video src={v.cloudinaryUrl} controls autoPlay className="w-full h-full object-contain" />
+                    <div className="w-full h-full relative bg-black flex items-center justify-center">
+                      {videoLoading[v.videoId] && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-white text-xs gap-1 z-10">
+                          <Loader2 className="h-4 w-4 animate-spin" /> Loading...
+                        </div>
+                      )}
+                      {videoErrors[v.videoId] ? (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-red-300 text-xs p-2 text-center gap-1 z-10">
+                          <AlertCircle className="h-4 w-4" />
+                          <span>Preview failed: {videoErrors[v.videoId]}</span>
+                          <span className="text-[10px] text-zinc-400 break-all">{v.cloudinaryUrl.slice(0,120)}</span>
+                          <Button size="sm" variant="outline" className="mt-1 h-6 text-xs" onClick={()=>{setVideoErrors(prev=>({...prev, [v.videoId]: ''})); setPreviewId(null); setTimeout(()=>setPreviewId(v.videoId), 50);}}>Retry</Button>
+                        </div>
+                      ) : null}
+                      <video
+                        src={v.cloudinaryUrl}
+                        controls
+                        controlsList="nodownload"
+                        preload="metadata"
+                        autoPlay
+                        playsInline
+                        crossOrigin="anonymous"
+                        className="w-full h-full object-contain"
+                        onLoadStart={() => setVideoLoading(prev=>({...prev, [v.videoId]: true}))}
+                        onLoadedData={() => setVideoLoading(prev=>({...prev, [v.videoId]: false}))}
+                        onCanPlay={() => setVideoLoading(prev=>({...prev, [v.videoId]: false}))}
+                        onError={(e)=> {
+                          const el = e.currentTarget;
+                          const errCode = el.error?.code;
+                          let msg = "Unknown error";
+                          if (el.error) msg = `${el.error.message || 'MediaError'} (code ${errCode})`;
+                          console.warn(`[VideoLibrary] video error ${v.videoId}`, msg, v.cloudinaryUrl);
+                          setVideoLoading(prev=>({...prev, [v.videoId]: false}));
+                          setVideoErrors(prev=>({...prev, [v.videoId]: msg}));
+                        }}
+                        onVolumeChange={() => {}}
+                      />
+                    </div>
                   ) : thumb ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={thumb} alt={v.fileName} className="w-full h-full object-cover" />

@@ -9,7 +9,7 @@ import crypto from "crypto";
  * Use signed uploads: server generates signature, client uploads directly to Cloudinary.
  */
 
-function getCloudinaryConfig() {
+export function getCloudinaryConfig() {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
   const apiKey = process.env.CLOUDINARY_API_KEY;
   const apiSecret = process.env.CLOUDINARY_API_SECRET;
@@ -142,11 +142,13 @@ export async function deleteCloudinaryAsset(publicId: string, resourceType: "vid
  * Generate a signed URL for private asset or just return secure_url
  * For thumbnails we can use Cloudinary transformations.
  */
-export function getCloudinaryThumbnailUrl(publicId: string, cloudName?: string): string {
+export function getCloudinaryThumbnailUrl(publicId: string, cloudName?: string, opts?: { width?: number; height?: number }): string {
   const cn = cloudName || getCloudinaryConfig().cloudName;
-  // Use video thumbnail at 1s with width 320
-  // https://res.cloudinary.com/<cloud>/video/upload/so_1,w_320,h_180,c_fill/<publicId>.jpg
-  return `https://res.cloudinary.com/${cn}/video/upload/so_1,w_320,h_180,c_fill/${publicId}.jpg`;
+  const w = opts?.width || 320;
+  const h = opts?.height || 180;
+  // Use video thumbnail at 1s with transformation
+  // https://res.cloudinary.com/<cloud>/video/upload/so_1,w_360,h_640,c_fill/<publicId>.jpg
+  return `https://res.cloudinary.com/${cn}/video/upload/so_1,w_${w},h_${h},c_fill/${publicId}.jpg`;
 }
 
 export function getCloudinaryVideoUrl(publicId: string, cloudName?: string, format?: string): string {

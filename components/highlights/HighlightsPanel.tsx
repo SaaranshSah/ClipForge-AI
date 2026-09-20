@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { getFirebaseAuth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 import { Loader2, Sparkles, Play, RotateCcw, AlertCircle, CheckCircle2, Clock, Video, Eye, Trophy, Smile, Frown, MessageCircle, Zap, Star } from "lucide-react";
 import { formatDuration, timeAgo } from "@/lib/utils";
 import { toast } from "sonner";
@@ -65,14 +66,19 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
   const [job, setJob] = useState<Job | null>(null);
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authUser, setAuthUser] = useState<any>(null);
   const [polling, setPolling] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [videoErrors, setVideoErrors] = useState<Record<string, string>>({});
+  const [videoLoading, setVideoLoading] = useState<Record<string, boolean>>({});
 
   const fetchData = useCallback(async () => {
     try {
       const auth = getFirebaseAuth();
-      const token = await auth.currentUser?.getIdToken().catch(() => null);
+      const user = authUser || auth.currentUser;
+      const token = await user?.getIdToken().catch(() => null);
       const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
       // Fetch job for this video
@@ -103,7 +109,8 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
     if (["COMPLETED", "FAILED"].includes(job.status)) return;
     try {
       const auth = getFirebaseAuth();
-      const token = await auth.currentUser?.getIdToken().catch(() => null);
+      const user = authUser || auth.currentUser;
+      const token = await user?.getIdToken().catch(() => null);
       const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
       const res = await fetch(`/api/highlights/jobs/${encodeURIComponent(job.jobId)}`, { credentials: "include", headers, cache: "no-store" });
       if (res.ok) {
@@ -121,9 +128,30 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
     } catch {}
   }, [job, videoId]);
 
+  // Auth-ready effect for refresh persistence fix
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    const auth = getFirebaseAuth();
+    setAuthLoading(true);
+    if (auth.currentUser) {
+      setAuthUser(auth.currentUser);
+      setAuthLoading(false);
+      fetchData();
+    }
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setAuthUser(u);
+      setAuthLoading(false);
+      if (u) fetchData();
+      else setLoading(false);
+    });
+    return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId]);
+
+  // Also refetch when authUser becomes available if we haven't loaded
+  useEffect(() => {
+    if (!authLoading && authUser && loading) fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, authUser]);
 
   useEffect(() => {
     if (!polling || !job) return;
@@ -137,7 +165,8 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
     setActionLoading(true);
     try {
       const auth = getFirebaseAuth();
-      const token = await auth.currentUser?.getIdToken().catch(() => null);
+      const user = authUser || auth.currentUser;
+      const token = await user?.getIdToken().catch(() => null);
       const res = await fetch(`/api/highlights/jobs/${encodeURIComponent(job.jobId)}/retry`, {
         method: "POST",
         credentials: "include",
@@ -158,7 +187,8 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
     setActionLoading(true);
     try {
       const auth = getFirebaseAuth();
-      const token = await auth.currentUser?.getIdToken().catch(() => null);
+      const user = authUser || auth.currentUser;
+      const token = await user?.getIdToken().catch(() => null);
       // Need sourceUrl — fetch video doc first
       const videoRes = await fetch(`/api/cloudinary/videos/${encodeURIComponent(videoId)}`, {
         credentials: "include",
@@ -196,11 +226,11 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
     }
   };
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <Card className="bg-zinc-900 border-zinc-800">
         <CardContent className="p-6 flex items-center gap-2 text-zinc-500">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading AI highlights…
+          <Loader2 className="h-4 w-4 animate-spin" /> {authLoading ? "Checking authentication…" : "Loading AI highlights…"}
         </CardContent>
       </Card>
     );
@@ -216,7 +246,7 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
           <CardDescription>No highlights job yet for this video. Queue automatically or manually.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <p className="text-xs text-zinc-500">Pipeline: <span className="font-mono">Video stored → ClipForge fpq → scoring → highlights → clips → Firebase Storage</span></p>
+          <p className="text-xs text-zinc-500">Pipeline: <span className="font-mono">Video stored → ClipForge fpq → scoring → highlights → clips → Cloudinary (video, resource_type video)</span></p>
           <Button onClick={handleAutoQueue} disabled={actionLoading} className="bg-white text-zinc-900 w-full">
             {actionLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} Queue AI Highlights
           </Button>
@@ -288,7 +318,7 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">Highlights — {highlights.length} selected</CardTitle>
-              <Badge variant="secondary">{highlights.length} clips → Firebase Storage</Badge>
+              <Badge variant="secondary">{highlights.length} clips → Cloudinary (video)</Badge>
             </div>
             <CardDescription>Scored by action, audio, emotion, event importance, context, uniqueness, viewer interest</CardDescription>
           </CardHeader>
@@ -328,9 +358,53 @@ export function HighlightsPanel({ videoId }: { videoId: string }) {
                         <span className="text-xs text-zinc-600 self-center font-mono">clips/{h.clipId}.mp4</span>
                       </div>
                       {isPreview && h.clipUrl && (
-                        <div className="mt-3 rounded-lg overflow-hidden border border-zinc-800 bg-black">
-                          <video src={h.clipUrl} controls className="w-full max-h-48 object-contain" />
-                          <div className="p-2 text-xs text-zinc-500 font-mono truncate">{h.clipStoragePath}</div>
+                        <div className="mt-3 rounded-lg overflow-hidden border border-zinc-800 bg-black relative">
+                          {videoLoading[h.highlightId] && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-white text-xs gap-1 z-10">
+                              <Loader2 className="h-4 w-4 animate-spin" /> Loading clip...
+                            </div>
+                          )}
+                          {videoErrors[h.highlightId] ? (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-red-300 text-xs p-3 text-center gap-1 z-10">
+                              <AlertCircle className="h-4 w-4" />
+                              <span>Preview failed: {videoErrors[h.highlightId]}</span>
+                              <span className="text-[10px] text-zinc-400 break-all">{h.clipUrl.slice(0,120)}</span>
+                              <span className="text-[10px] text-zinc-500">Resource: video • Format: mp4 • Try retry or check Cloudinary URL</span>
+                              <div className="flex gap-1 mt-1">
+                                <Button size="sm" variant="outline" className="h-6 text-xs" onClick={()=>{setVideoErrors(prev=>({...prev, [h.highlightId]: ''})); setPreviewId(null); setTimeout(()=>setPreviewId(h.highlightId), 50);}}>Retry</Button>
+                                <a href={h.clipUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] underline text-zinc-400">Open URL</a>
+                              </div>
+                            </div>
+                          ) : null}
+                          <video
+                            src={h.clipUrl}
+                            controls
+                            controlsList="nodownload"
+                            preload="metadata"
+                            playsInline
+                            crossOrigin="anonymous"
+                            className="w-full max-h-64 object-contain"
+                            onLoadStart={() => setVideoLoading(prev=>({...prev, [h.highlightId]: true}))}
+                            onLoadedData={() => setVideoLoading(prev=>({...prev, [h.highlightId]: false}))}
+                            onCanPlay={() => setVideoLoading(prev=>({...prev, [h.highlightId]: false}))}
+                            onError={(e)=> {
+                              const el = e.currentTarget;
+                              let msg = "Media error";
+                              if (el.error) msg = `${el.error.message || 'Error'} (code ${el.error.code})`;
+                              console.warn(`[HighlightsPanel] video error ${h.highlightId}`, msg, h.clipUrl);
+                              setVideoLoading(prev=>({...prev, [h.highlightId]: false}));
+                              setVideoErrors(prev=>({...prev, [h.highlightId]: msg}));
+                            }}
+                          >
+                            Your browser does not support the video tag.
+                          </video>
+                          <div className="p-2 text-xs text-zinc-500 font-mono truncate flex justify-between">
+                            <span>{h.clipStoragePath}</span>
+                            <span className="text-zinc-600">Cloudinary video • {h.clipUrl.includes('cloudinary') ? 'cloudinary' : 'other'}</span>
+                          </div>
+                          <div className="px-2 pb-2 text-[11px] text-zinc-600">
+                            MIME: video/mp4 • Controls: play/pause, seek, volume, fullscreen • No image URL
+                          </div>
                         </div>
                       )}
                     </div>

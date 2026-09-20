@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { getFirebaseAuth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 import { Loader2, Sparkles, Play, RotateCcw, AlertCircle, CheckCircle2, Clock, Video, Eye, Film, Type, Zap, Scissors, ShieldCheck } from "lucide-react";
 import { formatDuration, timeAgo } from "@/lib/utils";
 import { toast } from "sonner";
@@ -43,13 +44,18 @@ type Short = {
 export function ShortsPanel({ videoId }: { videoId: string }) {
   const [shorts, setShorts] = useState<Short[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authUser, setAuthUser] = useState<any>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [videoErrors, setVideoErrors] = useState<Record<string, string>>({});
+  const [videoLoading, setVideoLoading] = useState<Record<string, boolean>>({});
 
   const fetchShorts = useCallback(async () => {
     try {
       const auth = getFirebaseAuth();
-      const token = await auth.currentUser?.getIdToken().catch(() => null);
+      const user = authUser || auth.currentUser;
+      const token = await user?.getIdToken().catch(() => null);
       const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
       const res = await fetch(`/api/shorts?videoId=${encodeURIComponent(videoId)}`, { credentials: "include", headers, cache: "no-store" });
       if (res.ok) {
@@ -61,12 +67,12 @@ export function ShortsPanel({ videoId }: { videoId: string }) {
   }, [videoId]);
 
   const pollShorts = useCallback(async () => {
-    // Poll each non-terminal short
     for (const s of shorts) {
       if (["COMPLETED", "FAILED"].includes(s.status)) continue;
       try {
         const auth = getFirebaseAuth();
-        const token = await auth.currentUser?.getIdToken().catch(() => null);
+        const user = authUser || auth.currentUser;
+        const token = await user?.getIdToken().catch(() => null);
         const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
         const res = await fetch(`/api/shorts/${encodeURIComponent(s.shortId)}?videoId=${encodeURIComponent(videoId)}`, { credentials: "include", headers, cache: "no-store" });
         if (res.ok) {
@@ -78,8 +84,27 @@ export function ShortsPanel({ videoId }: { videoId: string }) {
   }, [shorts, videoId]);
 
   useEffect(() => {
-    fetchShorts();
-  }, [fetchShorts]);
+    const auth = getFirebaseAuth();
+    setAuthLoading(true);
+    if (auth.currentUser) {
+      setAuthUser(auth.currentUser);
+      setAuthLoading(false);
+      fetchShorts();
+    }
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setAuthUser(u);
+      setAuthLoading(false);
+      if (u) fetchShorts();
+      else setLoading(false);
+    });
+    return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId]);
+
+  useEffect(() => {
+    if (!authLoading && authUser && loading) fetchShorts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, authUser]);
 
   useEffect(() => {
     const hasActive = shorts.some((s) => !["COMPLETED", "FAILED"].includes(s.status));
@@ -92,7 +117,8 @@ export function ShortsPanel({ videoId }: { videoId: string }) {
     setActionLoading("auto");
     try {
       const auth = getFirebaseAuth();
-      const token = await auth.currentUser?.getIdToken().catch(() => null);
+      const user = authUser || auth.currentUser;
+      const token = await user?.getIdToken().catch(() => null);
       const res = await fetch("/api/shorts/auto", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -114,7 +140,8 @@ export function ShortsPanel({ videoId }: { videoId: string }) {
     setActionLoading(short.shortId);
     try {
       const auth = getFirebaseAuth();
-      const token = await auth.currentUser?.getIdToken().catch(() => null);
+      const user = authUser || auth.currentUser;
+      const token = await user?.getIdToken().catch(() => null);
       const res = await fetch(`/api/shorts/${encodeURIComponent(short.shortId)}/retry?videoId=${encodeURIComponent(videoId)}`, {
         method: "POST",
         credentials: "include",
@@ -131,11 +158,11 @@ export function ShortsPanel({ videoId }: { videoId: string }) {
     }
   };
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <Card className="bg-zinc-900 border-zinc-800">
         <CardContent className="p-6 flex items-center gap-2 text-zinc-500 text-sm">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading Shorts…
+          <Loader2 className="h-4 w-4 animate-spin" /> {authLoading ? "Checking authentication…" : "Loading Shorts…"}
         </CardContent>
       </Card>
     );
@@ -289,8 +316,45 @@ export function ShortsPanel({ videoId }: { videoId: string }) {
 
               {previewId === s.shortId && s.shortUrl && (
                 <div className="grid grid-cols-3 gap-3">
-                  <div className="col-span-2 rounded-lg overflow-hidden border border-zinc-800 bg-black aspect-[9/16] max-h-[420px] mx-auto">
-                    <video src={s.shortUrl} controls className="w-full h-full object-contain" />
+                  <div className="col-span-2 rounded-lg overflow-hidden border border-zinc-800 bg-black aspect-[9/16] max-h-[420px] mx-auto relative">
+                    {videoLoading[s.shortId] && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-white text-xs gap-1 z-10">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Loading short...
+                      </div>
+                    )}
+                    {videoErrors[s.shortId] ? (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-red-300 text-xs p-3 text-center gap-1 z-10">
+                        <AlertCircle className="h-4 w-4" />
+                        <span>Preview failed: {videoErrors[s.shortId]}</span>
+                        <span className="text-[10px] text-zinc-400 break-all">{s.shortUrl.slice(0,120)}</span>
+                        <span className="text-[10px] text-zinc-500">9:16 vertical • Cloudinary video • resource_type video</span>
+                        <div className="flex gap-1 mt-1">
+                          <Button size="sm" variant="outline" className="h-6 text-xs" onClick={()=>{setVideoErrors(prev=>({...prev, [s.shortId]: ''})); setPreviewId(null); setTimeout(()=>setPreviewId(s.shortId), 50);}}>Retry</Button>
+                          <a href={s.shortUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] underline text-zinc-400">Open URL</a>
+                        </div>
+                      </div>
+                    ) : null}
+                    <video
+                      src={s.shortUrl}
+                      controls
+                      controlsList="nodownload"
+                      preload="metadata"
+                      playsInline
+                      crossOrigin="anonymous"
+                      className="w-full h-full object-contain bg-black"
+                      onLoadStart={() => setVideoLoading(prev=>({...prev, [s.shortId]: true}))}
+                      onLoadedData={() => setVideoLoading(prev=>({...prev, [s.shortId]: false}))}
+                      onCanPlay={() => setVideoLoading(prev=>({...prev, [s.shortId]: false}))}
+                      onError={(e)=> {
+                        const el = e.currentTarget;
+                        let msg = "Media error";
+                        if (el.error) msg = `${el.error.message || 'Error'} (code ${el.error.code})`;
+                        console.warn(`[ShortsPanel] video error ${s.shortId}`, msg, s.shortUrl);
+                        setVideoLoading(prev=>({...prev, [s.shortId]: false}));
+                        setVideoErrors(prev=>({...prev, [s.shortId]: msg}));
+                      }}
+                    />
+                    <div className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded">9:16 • 1080×1920 • Cloudinary</div>
                   </div>
                   <div className="space-y-2">
                     {s.thumbnailUrl && (

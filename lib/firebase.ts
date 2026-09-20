@@ -4,7 +4,8 @@ import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
 import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
 import { getFirestore, type Firestore } from "firebase/firestore";
-import { getStorage, type FirebaseStorage } from "firebase/storage";
+// Firebase Storage removed per V4 architecture — video files use Cloudinary (resource_type video)
+// import { getStorage, type FirebaseStorage } from "firebase/storage";
 
 // Config from your project — also overridable via NEXT_PUBLIC_ env for Netlify
 const firebaseConfig = {
@@ -37,10 +38,16 @@ export function getFirebaseDb(): Firestore {
   return db;
 }
 
-let storage: FirebaseStorage;
-export function getFirebaseStorage(): FirebaseStorage {
-  if (!storage) storage = getStorage(app);
+// getFirebaseStorage removed — V4 uses Cloudinary for ALL video files
+// Kept as stub to avoid breaking old imports during transition
+let storage: any = null;
+export function getFirebaseStorage(): any {
+  console.warn("[firebase] getFirebaseStorage deprecated — use Cloudinary for video files");
   return storage;
+}
+export function getStorage(..._args: any[]): any {
+  console.warn("[firebase] getStorage deprecated — use Cloudinary");
+  return null;
 }
 
 let analytics: Analytics | null = null;

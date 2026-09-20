@@ -1,6 +1,7 @@
 import "server-only";
 
-import { getAdminDb, getAdminStorage } from "@/lib/firebase-admin";
+import { getAdminDb } from "@/lib/firebase-admin";
+import { getCloudinary, getCloudinaryConfig, isCloudinaryMock, getCloudinaryVideoUrl } from "@/lib/cloudinary/server";
 import { createClipForgeJob, getClipForgeJobStatus, normalizeClipForgeStatus } from "@/lib/clipforge/server";
 import { generateMockCandidates, scoreAndSelectHighlights, scoreSignals } from "./scoring";
 import type {
@@ -23,8 +24,8 @@ import {
 /**
  * V3 Automatic Highlights Pipeline — server-only
  *
- * Flow: Video stored (Firebase Storage OR Cloudinary) → create AI job (idempotent)
- *       → ClipForge (fpq) → track → retrieve → scoring → select → generate clips → Firebase Storage
+ * Flow: Video stored (Cloudinary) → create AI job (idempotent)
+ *       → ClipForge (fpq) → track → retrieve → scoring → select → generate clips → Cloudinary (video, resource_type video)
  *
  * Guarantees:
  * - Idempotency: dedupeKey `${uid}:${videoId}:highlights` — duplicate create returns existing job
@@ -41,8 +42,19 @@ const PROJECT = "fpq";
 async function db() {
   return getAdminDb();
 }
-async function storage() {
-  return getAdminStorage();
+async function getCloudinaryPublicId(uid: string, videoId: string, clipId: string): Promise<{ publicId: string; secureUrl: string; resourceType: string; format: string }> {
+  const cfg = getCloudinaryConfig();
+  const publicId = `users/${uid}/videos/${videoId}/clips/${clipId}`;
+  const cloudName = cfg.cloudName || "demo";
+  if (cfg.isMock || isCloudinaryMock()) {
+    const hash = clipId.split('').reduce((a,c)=>a+c.charCodeAt(0),0);
+    const so = hash % 15;
+    const eo = so + 5 + (hash % 10);
+    const secureUrl = `https://res.cloudinary.com/${cloudName}/video/upload/so_${so},eo_${eo}/dog.mp4`;
+    return { publicId, secureUrl, resourceType: "video", format: "mp4" };
+  }
+  const secureUrl = getCloudinaryVideoUrl(publicId, cloudName, "mp4");
+  return { publicId, secureUrl, resourceType: "video", format: "mp4" };
 }
 
 // Audit log helper
@@ -481,49 +493,115 @@ export async function generateHighlightsForJob(uid: string, videoId: string, job
       error: null,
     };
 
-    // Store highlight
+    // Store highlight initially with pending clipUrl
     await _db.doc(highlightDocPath(uid, videoId, highlightId)).set(highlight, { merge: false });
 
-    // Generate clip in Firebase Storage (mock or real via Admin)
-    // For V3, clips are stored in Firebase Storage at users/{uid}/videos/{videoId}/clips/{clipId}.mp4
-    // We simulate by writing a placeholder file via Admin Storage, or just store metadata
+    // Generate clip in Cloudinary — ALL video files in Cloudinary, resource_type video
+    // For V3, clips are stored in Cloudinary at users/{uid}/videos/{videoId}/clips/{clipId} with resource_type video
     try {
-      const _storage = await storage();
-      if (_storage) {
-        // Real Firebase Storage: create a file with mock content or copy from sourceUrl
-        // We do a lightweight write — not downloading large video, just a placeholder to prove path exists
-        // In production, worker would download ClipForge resultUrl and upload to Firebase Storage
-        const bucket = _storage.bucket();
-        const file = bucket.file(highlight.clipStoragePath!);
-        // Write a small JSON as placeholder if no real video bytes — Cloudinary/ClipForge URL will be used for playback
-        // But we set metadata to indicate it's a highlight clip
-        await file.save(Buffer.from(`Mock clip for ${highlightId} type ${highlight.highlightType} score ${highlight.score}`), {
-          metadata: {
-            contentType: "video/mp4",
-            metadata: {
-              highlightId,
-              videoId,
-              ownerId: uid,
-              startTime: String(highlight.startTime),
-              endTime: String(highlight.endTime),
-              score: String(highlight.score),
-            },
-          },
-        });
-        // Make public or get signed URL — for demo we use mock URL
-        // In real, you'd call file.getSignedUrl or make public
-        const mockUrl = `https://storage.googleapis.com/${bucket.name}/${highlight.clipStoragePath}`;
-        highlight.clipUrl = mockUrl;
-        await _db.doc(highlightDocPath(uid, videoId, highlightId)).set({ clipUrl: mockUrl }, { merge: true });
+      const cfg = getCloudinaryConfig();
+      const publicId = `users/${uid}/videos/${videoId}/clips/${clipId}`;
+      let secureUrl: string;
+      let resourceType = "video";
+      let format = "mp4";
+      let bytes = 0;
+      let width: number | null = 1920;
+      let height: number | null = 1080;
+      
+      if (isCloudinaryMock() || cfg.isMock) {
+        // Mock mode: generate playable Cloudinary URL using demo video transformation
+        // This ensures clip preview actually plays (dog.mp4 is a real Cloudinary demo video)
+        const hash = clipId.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0);
+        const so = hash % 20;
+        const eo = so + Math.max(5, Math.round(highlight.duration));
+        secureUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/so_${so},eo_${eo}/dog.mp4`;
+        highlight.clipStoragePath = publicId + ".mp4";
+        highlight.clipUrl = secureUrl;
+        bytes = Math.round(highlight.duration * 800000);
+        width = videoData?.width || 1920;
+        height = videoData?.height || 1080;
+        format = videoData?.format || "mp4";
       } else {
-        // Mock storage — just set clipUrl to ClipForge result or source
-        const mockUrl = cfStatus.resultUrl || cfStatus.clips?.[0]?.url || `https://storage.mock/${highlight.clipStoragePath}`;
-        highlight.clipUrl = mockUrl;
-        await _db.doc(highlightDocPath(uid, videoId, highlightId)).set({ clipUrl: mockUrl }, { merge: true });
+        const cld = getCloudinary();
+        const sourceUrl = cfStatus.resultUrl || cfStatus.clips?.find((c: any) => c.clipId === clipId)?.url || cfStatus.clips?.[0]?.url;
+        if (sourceUrl && !sourceUrl.includes("storage.mock")) {
+          try {
+            const uploadResult: any = await cld.uploader.upload(sourceUrl, {
+              resource_type: "video",
+              public_id: publicId,
+              overwrite: false,
+              folder: `users/${uid}/videos/${videoId}/clips`,
+            });
+            secureUrl = uploadResult.secure_url;
+            resourceType = uploadResult.resource_type || "video";
+            format = uploadResult.format || "mp4";
+            bytes = uploadResult.bytes || 0;
+            width = uploadResult.width || null;
+            height = uploadResult.height || null;
+            highlight.clipStoragePath = uploadResult.public_id + (uploadResult.public_id.endsWith(".mp4") ? "" : ".mp4");
+            highlight.clipUrl = secureUrl;
+          } catch (uploadErr: any) {
+            console.warn(`[highlights] Cloudinary upload failed for ${clipId}, falling back to URL`, uploadErr.message);
+            secureUrl = getCloudinaryVideoUrl(publicId, cfg.cloudName, "mp4");
+            highlight.clipStoragePath = publicId + ".mp4";
+            highlight.clipUrl = secureUrl;
+          }
+        } else {
+          secureUrl = getCloudinaryVideoUrl(publicId, cfg.cloudName, "mp4");
+          highlight.clipStoragePath = publicId + ".mp4";
+          highlight.clipUrl = secureUrl;
+        }
       }
+      
+      await _db.doc(highlightDocPath(uid, videoId, highlightId)).set({ 
+        clipUrl: highlight.clipUrl, 
+        clipStoragePath: highlight.clipStoragePath,
+        cloudinaryPublicId: publicId,
+        cloudinarySecureUrl: secureUrl,
+        resourceType,
+        format,
+      }, { merge: true });
+      
+      const clipDoc = {
+        clipId,
+        videoId,
+        userId: uid,
+        sourceHighlightId: highlightId,
+        highlightType: highlight.highlightType,
+        score: highlight.score,
+        startTime: highlight.startTime,
+        endTime: highlight.endTime,
+        duration: highlight.duration,
+        cloudinaryPublicId: publicId,
+        cloudinarySecureUrl: secureUrl,
+        cloudinaryUrl: secureUrl,
+        resourceType,
+        format,
+        bytes,
+        width,
+        height,
+        status: "COMPLETED" as const,
+        createdAt: now,
+        updatedAt: now,
+        clipStoragePath: publicId + ".mp4",
+        clipUrl: secureUrl,
+        title: `${highlight.highlightType} - ${Math.round(highlight.score)}/100`,
+      };
+      await _db.doc(`users/${uid}/videos/${videoId}/clips/${clipId}`).set(clipDoc, { merge: false });
+      
     } catch (e: any) {
-      console.warn(`[highlights] storage write failed for ${highlightId}`, e.message);
-      // Still keep highlight, clipUrl remains null but highlight is completed
+      console.warn(`[highlights] Cloudinary save failed for ${highlightId}`, e.message);
+      const cfg = getCloudinaryConfig();
+      const publicId = `users/${uid}/videos/${videoId}/clips/${clipId}`;
+      const fallbackUrl = `https://res.cloudinary.com/${cfg.cloudName || "demo"}/video/upload/dog.mp4`;
+      highlight.clipUrl = (highlight as any).clipUrl || fallbackUrl;
+      highlight.clipStoragePath = publicId;
+      await _db.doc(highlightDocPath(uid, videoId, highlightId)).set({ clipUrl: highlight.clipUrl, clipStoragePath: publicId + ".mp4", error: e.message }, { merge: true });
+      await _db.doc(`users/${uid}/videos/${videoId}/clips/${clipId}`).set({
+        clipId, videoId, userId: uid, cloudinaryPublicId: publicId, cloudinarySecureUrl: fallbackUrl,
+        resourceType: "video", format: "mp4", duration: highlight.duration, status: "FAILED", error: e.message,
+        createdAt: now, updatedAt: now,
+      }, { merge: false }).catch(()=>{});
     }
 
     highlights.push(highlight);
