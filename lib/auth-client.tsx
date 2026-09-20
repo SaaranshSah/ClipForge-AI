@@ -90,8 +90,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if (sync.ok) {
                 const data = await sync.json();
                 setUser(data.user);
+                // Ensure server components see the new JWT cookie — reload if we were in the "syncing" server fallback
+                // The dashboard server renders "Syncing your session" when JWT missing; after minting it, reload to get real data.
+                try {
+                  const path = window.location.pathname;
+                  if (path.startsWith("/dashboard") || path.startsWith("/upload") || path.startsWith("/library") || path.startsWith("/projects")) {
+                    // Use a short delay so cookie is definitely set, then hard reload to re-render server components
+                    setTimeout(() => {
+                      if (document.visibilityState === "visible") window.location.reload();
+                    }, 400);
+                  }
+                } catch {}
+              } else {
+                // Log for debugging — Netlify may have returned 500 due to DB, now fixed with fallback
+                const text = await sync.text().catch(() => "");
+                console.warn("[auth] firebase sync failed", sync.status, text);
               }
-            } catch {}
+            } catch (e) {
+              console.warn("[auth] firebase sync error", e);
+            }
             syncingRef.current = false;
             setLoading(false);
           } else {

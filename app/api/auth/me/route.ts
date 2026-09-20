@@ -10,7 +10,10 @@ export async function GET() {
       where: { id: session.id },
       select: { id: true, email: true, name: true },
     });
-    if (!user) return NextResponse.json({ user: null }, { status: 401 });
+    // If user not found in DB (e.g., fallback firebase_* id or DB wiped), still return session — don't 401
+    if (!user) {
+      return NextResponse.json({ user: { id: session.id, email: session.email, name: session.name } });
+    }
     return NextResponse.json({ user });
   } catch {
     // if DB not reachable, still return session

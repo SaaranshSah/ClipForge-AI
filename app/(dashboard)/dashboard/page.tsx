@@ -9,6 +9,7 @@ import { Video, Scissors, CalendarClock, CheckCircle2, Loader2, Plug2, ArrowUpRi
 import { formatBytes, timeAgo } from "@/lib/utils";
 import { DashboardClipForgeCard } from "@/components/clipforge/DashboardClipForgeCard";
 import { DashboardCloudinaryCard } from "@/components/cloudinary/DashboardCloudinaryCard";
+import { SyncingCard } from "@/components/dashboard/SyncingCard";
 
 export const dynamic = "force-dynamic";
 
@@ -83,13 +84,7 @@ export default async function DashboardPage() {
           <StatCard title="Scheduled clips" value={stats.scheduledClips} subtitle="Queued for publish (V2)" icon={CalendarClock} />
           <StatCard title="Published clips" value={stats.publishedClips} subtitle="Ready to share" icon={CheckCircle2} href="/clips" />
         </div>
-        <Card className="bg-zinc-900 border-zinc-800">
-          <CardContent className="p-8 text-center">
-            <Loader2 className="h-6 w-6 animate-spin mx-auto text-zinc-500 mb-3" />
-            <p className="text-sm text-zinc-400">Restoring your workspace…</p>
-            <p className="text-xs text-zinc-600 mt-1">If this persists, try logging in again.</p>
-          </CardContent>
-        </Card>
+        <SyncingCard />
       </div>
     );
   }
