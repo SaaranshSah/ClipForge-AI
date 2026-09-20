@@ -613,27 +613,37 @@ export async function generateHighlightsForJob(uid: string, videoId: string, job
         format,
       }, { merge: true });
       
+      // Requirement 6: Persist all 14 required fields in Firestore for every generated clip
       const clipDoc = {
+        // Required 14 fields
         clipId,
-        videoId,
         userId: uid,
+        sourceVideoId: videoId,
+        videoId, // alias for compatibility
+        cloudinaryPublicId: publicId,
+        // Cloudinary public_id / secure_url (both naming conventions)
+        public_id: publicId,
+        secure_url: secureUrl,
+        cloudinarySecureUrl: secureUrl,
+        cloudinaryUrl: secureUrl,
+        resource_type: resourceType,
+        resourceType,
+        format,
+        duration: highlight.duration,
+        width,
+        height,
+        bytes, // file size in bytes
+        fileSize: bytes,
+        file_size: bytes,
+        status: "COMPLETED" as const,
+        createdAt: now,
+        updatedAt: now,
+        // Additional context
         sourceHighlightId: highlightId,
         highlightType: highlight.highlightType,
         score: highlight.score,
         startTime: highlight.startTime,
         endTime: highlight.endTime,
-        duration: highlight.duration,
-        cloudinaryPublicId: publicId,
-        cloudinarySecureUrl: secureUrl,
-        cloudinaryUrl: secureUrl,
-        resourceType,
-        format,
-        bytes,
-        width,
-        height,
-        status: "COMPLETED" as const,
-        createdAt: now,
-        updatedAt: now,
         clipStoragePath: publicId + ".mp4",
         clipUrl: secureUrl,
         title: `${highlight.highlightType} - ${Math.round(highlight.score)}/100`,

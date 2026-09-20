@@ -472,9 +472,13 @@ export async function processShort(uid: string, videoId: string, shortId: string
     }, { merge: true });
     try { await _db.doc(`users/${uid}/jobs/${shortId}`).set({ shortUrl: short.shortUrl, storagePath: short.storagePath, cloudinaryPublicId: publicId, cloudinarySecureUrl: short.shortUrl, updatedAt: new Date().toISOString() }, { merge: true }); } catch {}
     // Also ensure dedicated shorts doc has cloudinary fields for VideoLibrary persistence after refresh
+    // Requirement 6 style: persist all Cloudinary metadata for Shorts as well (for refresh persistence)
     await _db.doc(`users/${uid}/videos/${videoId}/shorts/${shortId}`).set({
-      shortId, videoId, userId: uid, cloudinaryPublicId: publicId, cloudinarySecureUrl: short.shortUrl, resourceType, format, bytes,
-      width: 1080, height: 1920, duration: short.duration, status: "COMPLETED",
+      shortId, videoId, sourceVideoId: videoId, userId: uid, clipId: shortId,
+      cloudinaryPublicId: publicId, public_id: publicId,
+      cloudinarySecureUrl: short.shortUrl, secure_url: short.shortUrl, cloudinaryUrl: short.shortUrl,
+      resource_type: resourceType, resourceType, format, duration: short.duration, width: 1080, height: 1920, bytes, fileSize: bytes,
+      status: "COMPLETED", createdAt: short.createdAt, updatedAt: new Date().toISOString(),
     }, { merge: true }).catch(()=>{});
   } catch (e: any) {
     console.warn(`[shorts] Cloudinary video save failed for ${shortId}`, e.message);
