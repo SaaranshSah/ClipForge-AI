@@ -13,70 +13,87 @@ let adminStorage: any = null;
 let isMock = false;
 
 // In-memory mock for Firestore when admin not configured
-const mockFirestore = {
-  jobs: new Map<string, Map<string, any>>(), // uid -> jobId -> doc
-};
+// Generic store: collectionPath -> Map<docId, data>
+const mockStore = new Map<string, Map<string, any>>();
+
+function getCollectionMap(collectionPath: string): Map<string, any> {
+  if (!mockStore.has(collectionPath)) mockStore.set(collectionPath, new Map());
+  return mockStore.get(collectionPath)!;
+}
 
 function getMockDb() {
   return {
     collection: (path: string) => {
-      // path like "users/uid/jobs"
-      const parts = path.split("/");
-      const uid = parts[1];
+      // path like "users/uid/jobs" or "users/uid/videos"
       return {
-        doc: (jobId: string) => ({
-          path: `${path}/${jobId}`,
+        doc: (docId: string) => ({
+          path: `${path}/${docId}`,
           set: async (data: any, opts?: any) => {
-            if (!mockFirestore.jobs.has(uid)) mockFirestore.jobs.set(uid, new Map());
-            const existing = mockFirestore.jobs.get(uid)!.get(jobId) || {};
+            const col = getCollectionMap(path);
+            const existing = col.get(docId) || {};
             const merged = opts?.merge ? { ...existing, ...data } : data;
-            mockFirestore.jobs.get(uid)!.set(jobId, merged);
+            col.set(docId, merged);
           },
           update: async (data: any) => {
-            if (!mockFirestore.jobs.has(uid)) mockFirestore.jobs.set(uid, new Map());
-            const existing = mockFirestore.jobs.get(uid)!.get(jobId) || {};
-            mockFirestore.jobs.get(uid)!.set(jobId, { ...existing, ...data });
+            const col = getCollectionMap(path);
+            const existing = col.get(docId) || {};
+            col.set(docId, { ...existing, ...data });
           },
           get: async () => {
-            const data = mockFirestore.jobs.get(uid)?.get(jobId);
-            return { exists: !!data, data: () => data, id: jobId };
+            const col = getCollectionMap(path);
+            const data = col.get(docId);
+            return { exists: !!data, data: () => data, id: docId };
           },
           delete: async () => {
-            mockFirestore.jobs.get(uid)?.delete(jobId);
+            const col = getCollectionMap(path);
+            col.delete(docId);
           },
         }),
-        where: () => ({ get: async () => ({ docs: [] }) }),
+        where: function () { return this; },
         orderBy: function () { return this; },
         limit: function () { return this; },
         get: async () => {
-          const map = mockFirestore.jobs.get(uid);
-          const docs = map ? Array.from(map.entries()).map(([id, data]) => ({ id, data: () => data, exists: true })) : [];
-          return { docs, empty: docs.length === 0 };
+          const col = getCollectionMap(path);
+          const docs = Array.from(col.entries()).map(([id, data]) => ({ id, data: () => data, exists: true }));
+          return { docs, empty: docs.length === 0, forEach: (cb: any) => docs.forEach(cb) };
+        },
+        // add .add for completeness
+        add: async (data: any) => {
+          const col = getCollectionMap(path);
+          const id = `mock_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+          col.set(id, data);
+          return { id };
         },
       };
     },
     doc: (path: string) => {
+      // path like "users/{uid}/videos/{videoId}" or "users/{uid}/jobs/{jobId}"
       const parts = path.split("/");
-      // users/{uid}/jobs/{jobId}
-      if (parts.length === 4 && parts[0] === "users" && parts[2] === "jobs") {
-        const uid = parts[1];
-        const jobId = parts[3];
+      if (parts.length % 2 === 0 && parts[0] === "users") {
+        // collection = all but last segment, docId = last
+        const docId = parts[parts.length - 1];
+        const collectionPath = parts.slice(0, -1).join("/");
         return {
           path,
           set: async (data: any, opts?: any) => {
-            if (!mockFirestore.jobs.has(uid)) mockFirestore.jobs.set(uid, new Map());
-            const existing = mockFirestore.jobs.get(uid)!.get(jobId) || {};
+            const col = getCollectionMap(collectionPath);
+            const existing = col.get(docId) || {};
             const merged = opts?.merge ? { ...existing, ...data } : data;
-            mockFirestore.jobs.get(uid)!.set(jobId, merged);
+            col.set(docId, merged);
           },
           update: async (data: any) => {
-            if (!mockFirestore.jobs.has(uid)) mockFirestore.jobs.set(uid, new Map());
-            const existing = mockFirestore.jobs.get(uid)!.get(jobId) || {};
-            mockFirestore.jobs.get(uid)!.set(jobId, { ...existing, ...data });
+            const col = getCollectionMap(collectionPath);
+            const existing = col.get(docId) || {};
+            col.set(docId, { ...existing, ...data });
           },
           get: async () => {
-            const data = mockFirestore.jobs.get(uid)?.get(jobId);
-            return { exists: !!data, data: () => data, id: jobId };
+            const col = getCollectionMap(collectionPath);
+            const data = col.get(docId);
+            return { exists: !!data, data: () => data, id: docId };
+          },
+          delete: async () => {
+            const col = getCollectionMap(collectionPath);
+            col.delete(docId);
           },
         };
       }
@@ -85,8 +102,11 @@ function getMockDb() {
         set: async () => {},
         update: async () => {},
         get: async () => ({ exists: false, data: () => null }),
+        delete: async () => {},
       };
     },
+    // Expose internal for debugging
+    _mockStore: mockStore,
   };
 }
 
@@ -157,7 +177,10 @@ export async function verifyFirebaseIdToken(idToken: string): Promise<{ uid: str
       return { uid: decoded.uid, email: decoded.email };
     }
     // Mock: decode JWT payload without verification (dev only)
-    const payload = JSON.parse(Buffer.from(idToken.split(".")[1], "base64").toString());
+    const parts = idToken.split(".");
+    if (parts.length < 2) return null;
+    const payloadJson = Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString();
+    const payload = JSON.parse(payloadJson);
     return { uid: payload.user_id || payload.sub || payload.uid, email: payload.email };
   } catch {
     return null;
@@ -166,4 +189,9 @@ export async function verifyFirebaseIdToken(idToken: string): Promise<{ uid: str
 
 export function isAdminMock(): boolean {
   return isMock;
+}
+
+// Expose mock store for testing if needed
+export function __getMockStore() {
+  return mockStore;
 }

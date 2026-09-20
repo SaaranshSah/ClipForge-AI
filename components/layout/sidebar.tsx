@@ -16,6 +16,8 @@ import {
   LogOut,
   Menu,
   X,
+  Video,
+  Library,
 } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/lib/auth-client";
@@ -23,6 +25,7 @@ import { useAuth } from "@/lib/auth-client";
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/upload", label: "Upload", icon: Upload },
+  { href: "/library", label: "Library", icon: Video },
   { href: "/projects", label: "Projects", icon: FolderOpen },
   { href: "/clips", label: "Clip Library", icon: Film },
   { href: "/integrations", label: "Integrations", icon: Plug2 },

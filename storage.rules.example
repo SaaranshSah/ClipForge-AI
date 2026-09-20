@@ -1,7 +1,11 @@
+// NOTE (V2): Actual video files are now stored in Cloudinary (users/{uid}/videos/{videoId}/original/)
+// Firebase Storage is kept only for back-compat of V1 ClipForge generated clips; new uploads use Cloudinary.
+// The rules below are preserved but V2 videos do NOT use Firebase Storage.
+
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // ClipForge source uploads + generated clips
+    // (V1) ClipForge source uploads + generated clips — retained for back-compat
     // Path: users/{uid}/videos/{videoId}/source.mp4  and  users/{uid}/videos/{videoId}/clips/{clipId}.mp4
     match /users/{uid}/videos/{videoId}/{allPaths=**} {
       allow read: if request.auth != null && request.auth.uid == uid;

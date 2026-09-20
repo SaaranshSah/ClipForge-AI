@@ -1,6 +1,17 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Cloudinary videos — per-user isolation (V2 primary) — actual video bytes in Cloudinary
+    // Path: users/{uid}/videos/{videoId} with fields fileName, cloudinaryPublicId, cloudinaryUrl, ownerId etc.
+    // Do NOT store actual video files in Firestore — only metadata
+    match /users/{uid}/videos/{videoId} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+      // Ensure ownerId matches and publicId prefix is users/{uid}/videos/
+      allow create: if request.auth.uid == uid
+                    && request.resource.data.ownerId == uid
+                    && request.resource.data.cloudinaryPublicId.matches('users/' + uid + '/videos/.*');
+    }
+
     // ClipForge jobs — per-user isolation
     // Path: users/{uid}/jobs/{jobId}
     match /users/{uid}/jobs/{jobId} {

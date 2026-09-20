@@ -8,6 +8,7 @@ import Link from "next/link";
 import { Video, Scissors, CalendarClock, CheckCircle2, Loader2, Plug2, ArrowUpRight, UploadCloud, Film } from "lucide-react";
 import { formatBytes, timeAgo } from "@/lib/utils";
 import { DashboardClipForgeCard } from "@/components/clipforge/DashboardClipForgeCard";
+import { DashboardCloudinaryCard } from "@/components/cloudinary/DashboardCloudinaryCard";
 
 export const dynamic = "force-dynamic";
 
@@ -135,8 +136,11 @@ export default async function DashboardPage() {
         <StatCard title="Published clips" value={stats.publishedClips} subtitle="Ready to share" icon={CheckCircle2} href="/clips" />
       </div>
 
-      {/* ClipForge — project fpq */}
-      <DashboardClipForgeCard />
+      {/* Cloudinary — V2 primary + ClipForge — project fpq */}
+      <div className="grid lg:grid-cols-2 gap-4 sm:gap-6">
+        <DashboardCloudinaryCard />
+        <DashboardClipForgeCard />
+      </div>
 
       <div className="grid lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Processing jobs */}
